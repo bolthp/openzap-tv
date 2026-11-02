@@ -1,19 +1,9 @@
-# openzap
+# OpenZap
 
-A Rust project (early stage).
+Desktop IPTV player for Windows, Linux and macOS: HLS/HTTP streams, M3U playlists, XMLTV EPG.
 
-## Build & run
-
-```sh
-cargo run
-```
-
-## Test
-
-```sh
-cargo test
-```
+**Status:** early development.
 
 ## License
 
-GPL-3.0 — see [LICENSE](LICENSE).
+GPL-3.0-or-later — see [LICENSE](LICENSE).
