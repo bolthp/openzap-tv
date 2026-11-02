@@ -4,6 +4,7 @@ pub mod browse;
 pub mod config;
 pub mod epg;
 pub mod guide;
+pub mod loader;
 pub mod m3u;
 pub mod mask;
 pub mod platform;
