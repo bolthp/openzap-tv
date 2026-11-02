@@ -15,18 +15,32 @@ pub fn groups(playlist: &Playlist) -> Vec<String> {
     set.into_iter().map(String::from).collect()
 }
 
-/// Indices of channels whose name contains `query` (case-insensitive)
-/// and, if given, that belong to `group`. Indices keep playlist order.
+/// What the channel list should show.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Filter<'a> {
+    /// Case-insensitive substring of the channel name; empty matches all.
+    pub query: &'a str,
+    pub group: Option<&'a str>,
+    /// If set, only channels whose `Channel::key` is in this set.
+    pub favorites: Option<&'a BTreeSet<String>>,
+}
+
+/// Indices of channels that pass `filter`, in playlist order.
 ///
 /// Returning indices instead of references lets the UI store the result
 /// without borrowing the playlist.
-pub fn filter_channels(playlist: &Playlist, query: &str, group: Option<&str>) -> Vec<usize> {
-    let query = query.trim().to_lowercase();
+pub fn filter_channels(playlist: &Playlist, filter: &Filter) -> Vec<usize> {
+    let query = filter.query.trim().to_lowercase();
     playlist
         .channels
         .iter()
         .enumerate()
-        .filter(|(_, c)| group.is_none_or(|g| c.group_title.as_deref() == Some(g)))
+        .filter(|(_, c)| {
+            filter
+                .group
+                .is_none_or(|g| c.group_title.as_deref() == Some(g))
+        })
+        .filter(|(_, c)| filter.favorites.is_none_or(|set| set.contains(c.key())))
         .filter(|(_, c)| query.is_empty() || c.name.to_lowercase().contains(&query))
         .map(|(i, _)| i)
         .collect()
@@ -93,27 +107,38 @@ mod tests {
         assert_eq!(groups(&sample()), ["Movies", "News", "Sports"]);
     }
 
+    fn run(pl: &Playlist, query: &str, group: Option<&str>) -> Vec<usize> {
+        filter_channels(
+            pl,
+            &Filter {
+                query,
+                group,
+                favorites: None,
+            },
+        )
+    }
+
     #[test]
     fn empty_filter_returns_all() {
-        assert_eq!(filter_channels(&sample(), "", None), [0, 1, 2, 3, 4]);
-        assert_eq!(filter_channels(&sample(), "   ", None), [0, 1, 2, 3, 4]);
+        assert_eq!(run(&sample(), "", None), [0, 1, 2, 3, 4]);
+        assert_eq!(run(&sample(), "   ", None), [0, 1, 2, 3, 4]);
     }
 
     #[test]
     fn query_is_case_insensitive_substring() {
-        assert_eq!(filter_channels(&sample(), "FILM", None), [1, 3]);
+        assert_eq!(run(&sample(), "FILM", None), [1, 3]);
     }
 
     #[test]
     fn group_filter() {
-        assert_eq!(filter_channels(&sample(), "", Some("Movies")), [1, 3]);
-        assert!(filter_channels(&sample(), "", Some("Nope")).is_empty());
+        assert_eq!(run(&sample(), "", Some("Movies")), [1, 3]);
+        assert!(run(&sample(), "", Some("Nope")).is_empty());
     }
 
     #[test]
     fn query_and_group_combine() {
-        assert_eq!(filter_channels(&sample(), "classics", Some("Movies")), [3]);
-        assert!(filter_channels(&sample(), "news", Some("Movies")).is_empty());
+        assert_eq!(run(&sample(), "classics", Some("Movies")), [3]);
+        assert!(run(&sample(), "news", Some("Movies")).is_empty());
     }
 
     #[test]
@@ -121,7 +146,26 @@ mod tests {
         let pl = Playlist {
             channels: vec![ch("Первый Канал", None)],
         };
-        assert_eq!(filter_channels(&pl, "первый", None), [0]);
+        assert_eq!(run(&pl, "первый", None), [0]);
+    }
+
+    #[test]
+    fn favorites_filter_uses_channel_keys() {
+        let mut pl = sample();
+        pl.channels[2].tvg_id = Some("sport.one".into()); // key is the id, not the name
+        let favs: BTreeSet<String> = ["Example Film".to_string(), "sport.one".to_string()].into();
+        let filter = Filter {
+            favorites: Some(&favs),
+            ..Filter::default()
+        };
+        assert_eq!(filter_channels(&pl, &filter), [1, 2]);
+
+        let narrowed = Filter {
+            query: "sport",
+            favorites: Some(&favs),
+            ..Filter::default()
+        };
+        assert_eq!(filter_channels(&pl, &narrowed), [2]);
     }
 
     #[test]

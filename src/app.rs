@@ -5,10 +5,10 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use eframe::egui;
-use openzap::browse::{filter_channels, format_duration, groups, progress};
+use openzap::browse::{Filter, filter_channels, format_duration, groups, progress};
 use openzap::config::{self, Config};
 use openzap::epg::{Epg, EpgChannel, Programme};
-use openzap::guide::now_next_for;
+use openzap::guide::GuideIndex;
 use openzap::loader::{self, Loaded};
 use openzap::m3u::{Channel, Playlist};
 use openzap::mask::mask_url;
@@ -42,6 +42,10 @@ pub struct App {
     pending_stop: bool,
     pending_volume: bool,
     pending_save: bool,
+    pending_favorite: Option<usize>,
+    favorites_only: bool,
+    /// EPG matching and now/next lookup; rebuilt whenever playlist or EPG change.
+    guide: GuideIndex,
     // Sources and persistence.
     config: Config,
     config_path: Option<PathBuf>,
@@ -91,7 +95,8 @@ impl App {
 
     fn new(playlist: Playlist, epg: Epg, notices: Vec<String>) -> Self {
         let groups = groups(&playlist);
-        let visible = filter_channels(&playlist, "", None);
+        let visible = filter_channels(&playlist, &Filter::default());
+        let guide = GuideIndex::build(&playlist, &epg);
         Self {
             playlist,
             epg,
@@ -109,6 +114,9 @@ impl App {
             pending_stop: false,
             pending_volume: false,
             pending_save: false,
+            pending_favorite: None,
+            favorites_only: false,
+            guide,
             config: Config::default(),
             config_path: None,
             playlist_input: String::new(),
@@ -174,13 +182,35 @@ impl App {
             Some(Err(e)) => self.notices.push(format!("EPG: {e}")),
             None => self.epg = Epg::default(),
         }
+        self.rebuild_guide();
+    }
+
+    fn rebuild_guide(&mut self) {
+        self.guide = GuideIndex::build(&self.playlist, &self.epg);
     }
 
     fn set_playlist(&mut self, playlist: Playlist) {
         self.groups = groups(&playlist);
         self.playlist = playlist;
         self.group = None;
-        self.selected = None;
+        // Reselect the channel played last time, if it is still there.
+        self.selected = self
+            .config
+            .last_channel
+            .as_deref()
+            .and_then(|key| self.playlist.channels.iter().position(|c| c.key() == key));
+        self.refilter();
+    }
+
+    fn toggle_favorite(&mut self, idx: usize) {
+        let Some(channel) = self.playlist.channels.get(idx) else {
+            return;
+        };
+        let key = channel.key().to_string();
+        if !self.config.favorites.remove(&key) {
+            self.config.favorites.insert(key);
+        }
+        self.pending_save = true;
         self.refilter();
     }
 
@@ -241,6 +271,8 @@ impl App {
         let result = self.player.as_ref().map(|p| p.load(&channel.url));
         match result {
             Some(Ok(())) => {
+                self.config.last_channel = Some(channel.key().to_string());
+                self.pending_save = true;
                 self.playing = Some(idx);
                 self.status = "Loading...".into();
                 self.apply_volume();
@@ -299,12 +331,20 @@ impl App {
     }
 
     fn refilter(&mut self) {
-        self.visible = filter_channels(&self.playlist, &self.query, self.group.as_deref());
+        let filter = Filter {
+            query: &self.query,
+            group: self.group.as_deref(),
+            favorites: self.favorites_only.then_some(&self.config.favorites),
+        };
+        self.visible = filter_channels(&self.playlist, &filter);
     }
 
-    fn channel_list(&mut self, ui: &mut egui::Ui) {
+    fn channel_list(&mut self, ui: &mut egui::Ui, now: i64) {
         ui.heading("OpenZap");
         let mut changed = ui.text_edit_singleline(&mut self.query).changed();
+        changed |= ui
+            .checkbox(&mut self.favorites_only, "Favorites only")
+            .changed();
 
         egui::ComboBox::from_label("Group")
             .selected_text(self.group.as_deref().unwrap_or("All"))
@@ -329,10 +369,31 @@ impl App {
         ui.separator();
 
         let row_height = ui.text_style_height(&egui::TextStyle::Body);
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let (strong, weak) = (ui.visuals().text_color(), ui.visuals().weak_text_color());
         egui::ScrollArea::vertical().show_rows(ui, row_height, self.visible.len(), |ui, range| {
             for &idx in &self.visible[range] {
-                let name = &self.playlist.channels[idx].name;
-                let response = ui.selectable_label(self.selected == Some(idx), name);
+                let channel = &self.playlist.channels[idx];
+                let is_favorite = self.config.favorites.contains(channel.key());
+                let on_air = self.guide.now_next(&self.epg, idx, now).now;
+
+                // One line: [* ]Name  ·  current programme (dimmed).
+                let mut job = egui::text::LayoutJob::default();
+                let prefix = if is_favorite { "* " } else { "" };
+                job.append(
+                    &format!("{prefix}{}", channel.name),
+                    0.0,
+                    egui::TextFormat::simple(font.clone(), strong),
+                );
+                if let Some(p) = on_air {
+                    job.append(
+                        &format!("   {}", p.title),
+                        0.0,
+                        egui::TextFormat::simple(font.clone(), weak),
+                    );
+                }
+                let response =
+                    ui.add(egui::Button::selectable(self.selected == Some(idx), job).truncate());
                 if response.clicked() {
                     self.selected = Some(idx);
                 }
@@ -369,6 +430,14 @@ impl App {
             if ui.button("Stop").clicked() {
                 self.pending_stop = true;
             }
+            let label = if self.config.favorites.contains(channel.key()) {
+                "Remove from favorites"
+            } else {
+                "Add to favorites"
+            };
+            if ui.button(label).clicked() {
+                self.pending_favorite = Some(selected);
+            }
             let slider = ui.add(egui::Slider::new(&mut self.volume, 0.0..=100.0).text("Volume"));
             if slider.changed() {
                 self.pending_volume = true;
@@ -387,7 +456,7 @@ impl App {
         }
         ui.separator();
 
-        let nn = now_next_for(channel, &self.epg, now);
+        let nn = self.guide.now_next(&self.epg, selected, now);
         match nn.now {
             Some(p) => {
                 ui.strong(format!("Now: {}", p.title));
@@ -425,10 +494,13 @@ impl eframe::App for App {
         egui::Panel::top("sources").show(ui, |ui| self.source_bar(ui));
         egui::Panel::left("channels")
             .default_size(320.0)
-            .show(ui, |ui| self.channel_list(ui));
+            .show(ui, |ui| self.channel_list(ui, now));
         egui::CentralPanel::default().show(ui, |ui| self.details(ui, now));
         if let Some(idx) = self.pending_play.take() {
             self.play(idx);
+        }
+        if let Some(idx) = self.pending_favorite.take() {
+            self.toggle_favorite(idx);
         }
         if std::mem::take(&mut self.pending_stop) {
             self.stop();
@@ -509,8 +581,9 @@ mod tests {
         let now = 1_000_000;
         let (playlist, epg) = demo_data(now);
         assert_eq!(playlist.channels.len(), 3);
-        for ch in &playlist.channels {
-            let nn = now_next_for(ch, &epg, now);
+        let guide = GuideIndex::build(&playlist, &epg);
+        for (i, ch) in playlist.channels.iter().enumerate() {
+            let nn = guide.now_next(&epg, i, now);
             assert!(nn.now.is_some(), "{} has no current programme", ch.name);
             assert!(nn.next.is_some(), "{} has no next programme", ch.name);
         }
@@ -632,5 +705,34 @@ mod tests {
         assert!(app.loading.is_none(), "load did not finish");
         assert_eq!(app.notices.len(), 1);
         assert!(app.notices[0].starts_with("Playlist: cannot read"));
+    }
+
+    #[test]
+    fn favorites_toggle_filter_and_persist() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+
+        app.toggle_favorite(1); // "Example Film"
+        assert!(app.config.favorites.contains("film.example"));
+        assert!(app.pending_save);
+
+        app.favorites_only = true;
+        app.refilter();
+        assert_eq!(app.visible, [1]);
+
+        app.toggle_favorite(1); // removes it again
+        assert!(app.config.favorites.is_empty());
+        assert!(app.visible.is_empty());
+    }
+
+    #[test]
+    fn last_channel_is_reselected_after_load() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(Playlist::default(), Epg::default(), vec![]);
+        app.config.last_channel = Some("sport.example".into());
+
+        app.apply_loaded(loaded(Ok(playlist), Some(Ok(epg))), "p", "e");
+        assert_eq!(app.selected, Some(2));
+        assert!(app.guide.epg_id(2).is_some());
     }
 }

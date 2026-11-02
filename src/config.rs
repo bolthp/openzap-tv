@@ -3,6 +3,7 @@
 //! The file may contain URLs with access keys, so it is created readable
 //! by the owner only (on Unix) and its content is never logged.
 
+use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -14,6 +15,11 @@ pub struct Config {
     pub epg: Option<String>,
     /// Volume in percent, 0–100.
     pub volume: f64,
+    /// Keys (`Channel::key`) of favorite channels. A `BTreeSet` keeps the
+    /// file sorted and free of duplicates.
+    pub favorites: BTreeSet<String>,
+    /// Key of the channel played last.
+    pub last_channel: Option<String>,
 }
 
 impl Default for Config {
@@ -22,6 +28,8 @@ impl Default for Config {
             playlist: None,
             epg: None,
             volume: 80.0,
+            favorites: BTreeSet::new(),
+            last_channel: None,
         }
     }
 }
@@ -42,6 +50,10 @@ impl Config {
             match key.trim() {
                 "playlist" if !value.is_empty() => cfg.playlist = Some(value.to_string()),
                 "epg" if !value.is_empty() => cfg.epg = Some(value.to_string()),
+                "favorite" if !value.is_empty() => {
+                    cfg.favorites.insert(value.to_string());
+                }
+                "last_channel" if !value.is_empty() => cfg.last_channel = Some(value.to_string()),
                 "volume" => {
                     if let Ok(v) = value.parse::<f64>()
                         && v.is_finite()
@@ -66,6 +78,12 @@ impl Config {
             out.push_str(&format!("epg={}\n", one_line(e)));
         }
         out.push_str(&format!("volume={}\n", self.volume));
+        if let Some(c) = &self.last_channel {
+            out.push_str(&format!("last_channel={}\n", one_line(c)));
+        }
+        for key in &self.favorites {
+            out.push_str(&format!("favorite={}\n", one_line(key)));
+        }
         out
     }
 
@@ -156,8 +174,16 @@ mod tests {
             playlist: Some("https://example.com/list.m3u?token=fakekey".into()),
             epg: Some("/home/me/epg.xml.gz".into()),
             volume: 42.5,
+            favorites: ["news.example".to_string(), "Sport = One".to_string()].into(),
+            last_channel: Some("news.example".into()),
         };
         assert_eq!(Config::parse(&cfg.serialize()), cfg);
+    }
+
+    #[test]
+    fn duplicate_favorites_collapse() {
+        let cfg = Config::parse("favorite=a\nfavorite=b\nfavorite=a\nfavorite=\n");
+        assert_eq!(cfg.favorites.len(), 2);
     }
 
     #[test]
@@ -235,6 +261,7 @@ mod tests {
             playlist: Some("http://example.com/x".into()),
             epg: None,
             volume: 10.0,
+            ..Config::default()
         };
         cfg.save_to(&path).unwrap();
         assert_eq!(Config::load_from(&path), cfg);

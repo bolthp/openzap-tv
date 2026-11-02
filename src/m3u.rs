@@ -15,6 +15,14 @@ pub struct Channel {
     pub group_title: Option<String>,
 }
 
+impl Channel {
+    /// Stable identifier for favorites: `tvg-id` if present, else the name.
+    /// Returns a borrowed `&str`, so no allocation.
+    pub fn key(&self) -> &str {
+        self.tvg_id.as_deref().unwrap_or(&self.name)
+    }
+}
+
 // Manual `Debug` (a trait) so that `{:?}` never prints a URL with secrets.
 impl fmt::Debug for Channel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -215,6 +223,21 @@ mod tests {
     fn empty_attribute_becomes_none() {
         let text = "#EXTM3U\n#EXTINF:-1 tvg-id=\"\",Ch\nhttp://example.com/c\n";
         assert_eq!(parse(text).unwrap().channels[0].tvg_id, None);
+    }
+
+    #[test]
+    fn key_prefers_tvg_id_over_name() {
+        let with_id = Channel {
+            name: "N".into(),
+            tvg_id: Some("id.example".into()),
+            ..Channel::default()
+        };
+        let without = Channel {
+            name: "N".into(),
+            ..Channel::default()
+        };
+        assert_eq!(with_id.key(), "id.example");
+        assert_eq!(without.key(), "N");
     }
 
     #[test]
