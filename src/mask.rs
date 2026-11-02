@@ -17,7 +17,20 @@ const SENSITIVE_KEYS: &[&str] = &[
     "signature",
 ];
 
-/// Returns `url` with credentials (`user:pass@`) and sensitive query values replaced by `***`.
+/// Path segments that are followed by `<username>/<password>` in Xtream
+/// Codes style URLs (`/live/user/pass/123.ts`).
+const XTREAM_PREFIXES: &[&str] = &["live", "movie", "series", "timeshift"];
+
+/// Path segments at least this long, mixing letters and digits and without
+/// a file extension, are treated as embedded access keys.
+const TOKEN_MIN_LEN: usize = 10;
+
+/// Returns `url` with secrets replaced by `***`: credentials (`user:pass@`),
+/// sensitive query values, Xtream-style `user/pass` path segments and
+/// token-like path segments.
+///
+/// This is a best-effort heuristic: a short, all-letters key in an unusual
+/// place cannot be told apart from an ordinary path segment.
 ///
 /// Takes `&str` (a borrowed view) and returns an owned `String`, because the result is new text.
 pub fn mask_url(url: &str) -> String {
@@ -30,7 +43,7 @@ pub fn mask_url(url: &str) -> String {
         None => (main, None),
     };
 
-    let mut out = mask_userinfo(base);
+    let mut out = mask_path(&mask_userinfo(base));
     if let Some(query) = query {
         out.push('?');
         let masked: Vec<String> = query.split('&').map(mask_param).collect();
@@ -55,6 +68,46 @@ fn mask_userinfo(base: &str) -> String {
         Some(at) => format!("{}***{}", &base[..auth_start], &base[auth_start + at..]),
         None => base.to_string(),
     }
+}
+
+/// Masks secrets in the path part of `base` (everything after the host).
+fn mask_path(base: &str) -> String {
+    let path_start = base
+        .find("://")
+        .map(|i| i + 3)
+        .and_then(|auth| base[auth..].find('/').map(|p| auth + p));
+    let Some(path_start) = path_start else {
+        return base.to_string();
+    };
+    let (head, path) = base.split_at(path_start);
+    let mut segments: Vec<&str> = path.split('/').collect();
+
+    let mut masked = vec![false; segments.len()];
+    for (i, seg) in segments.iter().enumerate() {
+        if XTREAM_PREFIXES.iter().any(|p| seg.eq_ignore_ascii_case(p)) && i + 3 < segments.len() {
+            masked[i + 1] = true;
+            masked[i + 2] = true;
+        }
+        if looks_like_token(seg) {
+            masked[i] = true;
+        }
+    }
+    for (seg, hide) in segments.iter_mut().zip(&masked) {
+        if *hide {
+            *seg = "***";
+        }
+    }
+    format!("{head}{}", segments.join("/"))
+}
+
+fn looks_like_token(segment: &str) -> bool {
+    segment.len() >= TOKEN_MIN_LEN
+        && !segment.contains('.')
+        && segment
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        && segment.bytes().any(|b| b.is_ascii_alphabetic())
+        && segment.bytes().any(|b| b.is_ascii_digit())
 }
 
 fn mask_param(param: &str) -> String {
@@ -99,6 +152,55 @@ mod tests {
         assert_eq!(
             mask_url("https://example.com/a/b.m3u8#t=5"),
             "https://example.com/a/b.m3u8#t=5"
+        );
+    }
+
+    #[test]
+    fn masks_token_in_path() {
+        assert_eq!(
+            mask_url("http://example.com/iptv/AB12CD34EF56GH/6387/index.m3u8"),
+            "http://example.com/iptv/***/6387/index.m3u8"
+        );
+    }
+
+    #[test]
+    fn masks_xtream_credentials() {
+        assert_eq!(
+            mask_url("http://example.com:8080/live/john/secret/12345.ts"),
+            "http://example.com:8080/live/***/***/12345.ts"
+        );
+        assert_eq!(
+            mask_url("http://example.com/MOVIE/user/pass/99.mkv?x=1"),
+            "http://example.com/MOVIE/***/***/99.mkv?x=1"
+        );
+    }
+
+    #[test]
+    fn xtream_prefix_without_enough_segments_is_left_alone() {
+        // "/live/news/index.m3u8" is an ordinary path, not user/pass.
+        assert_eq!(
+            mask_url("http://example.com/live/news/index.m3u8"),
+            "http://example.com/live/news/index.m3u8"
+        );
+    }
+
+    #[test]
+    fn ordinary_path_segments_are_kept() {
+        for url in [
+            "http://example.com/hls/channel1/index.m3u8",
+            "http://example.com/streams/12345678901/playlist.m3u8", // digits only
+            "http://example.com/streams/onlyletterslong/playlist.m3u8",
+            "http://example.com/video_720p.m3u8",
+        ] {
+            assert_eq!(mask_url(url), url);
+        }
+    }
+
+    #[test]
+    fn everything_combined() {
+        assert_eq!(
+            mask_url("http://u:p@example.com/live/a/b/1.ts?token=t#frag"),
+            "http://***@example.com/live/***/***/1.ts?token=***#frag"
         );
     }
 
