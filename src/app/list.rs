@@ -5,7 +5,47 @@ use std::sync::Arc;
 use eframe::egui;
 use openzap::browse::progress;
 
+use openzap::config::Side;
+
 use super::{Action, App};
+
+/// Width of the list when it slides in over the video.
+const OVERLAY_WIDTH: f32 = 340.0;
+/// Pointer this close to the window edge brings the list in, points.
+const EDGE_PX: f32 = 6.0;
+/// How long the list stays after the pointer leaves it, seconds.
+pub(super) const LIST_LINGER_SECS: f64 = 1.5;
+const SLIDE_SECS: f32 = 0.18;
+
+/// The channel list over the video (fullscreen, or when it is not docked):
+/// slides in at the window edge, slides away after the pointer leaves.
+#[derive(Debug, Default)]
+pub(super) struct ListOverlay {
+    /// Stays open (the list button / `L` in fullscreen).
+    pub(super) pinned: bool,
+    until: f64,
+    /// Where the list was drawn last frame.
+    rect: Option<egui::Rect>,
+}
+
+impl ListOverlay {
+    /// `at_edge`: pointer at the window edge; `over`: pointer over the list.
+    pub(super) fn is_visible(&mut self, time: f64, at_edge: bool, over: bool) -> bool {
+        if at_edge || over {
+            self.until = time + LIST_LINGER_SECS;
+        }
+        self.pinned || time < self.until
+    }
+
+    /// Where the list was drawn on the last frame, if it is out.
+    pub(super) fn visible_rect(&self) -> Option<egui::Rect> {
+        self.rect
+    }
+
+    fn remaining(&self, time: f64) -> Option<f64> {
+        (time < self.until).then_some(self.until - time)
+    }
+}
 
 /// Colour of the favorite star.
 const STAR: egui::Color32 = egui::Color32::from_rgb(240, 190, 40);
@@ -19,6 +59,64 @@ impl App {
         self.list_filters(ui);
         ui.add_space(4.0);
         self.list_rows(ui, now);
+    }
+
+    /// Draws the sliding list over the video within `screen`.
+    pub(super) fn list_overlay(&mut self, ctx: &egui::Context, screen: egui::Rect, now: i64) {
+        let time = ctx.input(|i| i.time);
+        let pointer = ctx.input(|i| i.pointer.hover_pos());
+        let left = self.config.view.list_side == Side::Left;
+        let at_edge = pointer.is_some_and(|p| {
+            screen.contains(p)
+                && if left {
+                    p.x <= screen.left() + EDGE_PX
+                } else {
+                    p.x >= screen.right() - EDGE_PX
+                }
+        });
+        let over = match (pointer, self.list_overlay.rect) {
+            (Some(p), Some(r)) => r.contains(p),
+            _ => false,
+        };
+        // While the list is out, an open menu (group picker, context menu)
+        // counts as using it; menus of the bottom bar must not pull it in.
+        let menu_open = self.list_overlay.rect.is_some() && egui::Popup::is_any_open(ctx);
+        let visible = self
+            .list_overlay
+            .is_visible(time, at_edge, over || menu_open);
+        let shown =
+            ctx.animate_bool_with_time(egui::Id::unique("list-overlay"), visible, SLIDE_SECS);
+        if let Some(secs) = self.list_overlay.remaining(time) {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(secs.max(0.05)));
+        }
+        if shown <= 0.0 {
+            self.list_overlay.rect = None;
+            return;
+        }
+        let width = OVERLAY_WIDTH.min(screen.width() * 0.8);
+        let x = if left {
+            screen.left() - width * (1.0 - shown)
+        } else {
+            screen.right() - width * shown
+        };
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(x, screen.top()),
+            egui::vec2(width, screen.height()),
+        );
+        self.list_overlay.rect = Some(rect);
+        egui::Area::new(egui::Id::unique("list-overlay-area"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(rect.min)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(ui.visuals().panel_fill)
+                    .inner_margin(8.0)
+                    .show(ui, |ui| {
+                        ui.set_min_size(rect.size() - egui::vec2(16.0, 16.0));
+                        ui.set_max_size(rect.size() - egui::vec2(16.0, 16.0));
+                        self.channel_panel(ui, now);
+                    });
+            });
     }
 
     fn list_header(&mut self, ui: &mut egui::Ui) {
@@ -231,4 +329,29 @@ fn elided(
     let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font, color);
     job.wrap = egui::text::TextWrapping::truncate_at_width(width.max(0.0));
     painter.layout_job(job)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overlay_opens_at_the_edge_and_lingers() {
+        let mut list = ListOverlay::default();
+        assert!(!list.is_visible(0.0, false, false));
+        assert!(list.is_visible(1.0, true, false));
+        // Moving onto the list keeps it open.
+        assert!(list.is_visible(2.0, false, true));
+        assert!(list.is_visible(2.0 + LIST_LINGER_SECS - 0.1, false, false));
+        assert!(!list.is_visible(2.0 + LIST_LINGER_SECS, false, false));
+    }
+
+    #[test]
+    fn pinned_overlay_stays() {
+        let mut list = ListOverlay {
+            pinned: true,
+            ..ListOverlay::default()
+        };
+        assert!(list.is_visible(100.0, false, false));
+    }
 }

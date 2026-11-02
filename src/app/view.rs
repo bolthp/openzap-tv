@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use eframe::egui;
 use openzap::browse::{format_duration, progress};
+use openzap::config::Side;
 use openzap::player::AspectMode;
 use openzap::streaminfo::StreamInfo;
 
@@ -211,9 +212,17 @@ impl App {
     ) {
         let height = self.bar.height;
         let top = video.bottom() - height * shown;
+        // Leave room for the channel list sliding over the video.
+        let (mut left, mut right) = (video.left(), video.right());
+        if let Some(list) = self.list_overlay.visible_rect() {
+            match self.config.view.list_side {
+                Side::Left => left = left.max(list.right()),
+                Side::Right => right = right.min(list.left()),
+            }
+        }
         let bar = egui::Rect::from_min_max(
-            egui::pos2(video.left(), top),
-            egui::pos2(video.right(), top + height),
+            egui::pos2(left, top),
+            egui::pos2(right.max(left), top + height),
         );
         ui.painter().with_clip_rect(video).rect_filled(
             bar,
@@ -353,13 +362,19 @@ impl App {
                 if ui.button("⛶").on_hover_text("Fullscreen (F)").clicked() {
                     self.actions.push(Action::ToggleFullscreen);
                 }
-                let list_hint = if self.config.view.list_visible {
-                    "Hide the channel list (L)"
+                let list_shown = if self.fullscreen {
+                    self.list_overlay.pinned
                 } else {
-                    "Show the channel list (L)"
+                    self.config.view.list_visible
+                };
+                let list_hint = match (self.fullscreen, list_shown) {
+                    (true, false) => "Keep the channel list open (L)",
+                    (true, true) => "Let the channel list slide away (L)",
+                    (false, true) => "Hide the channel list (L)",
+                    (false, false) => "Show the channel list (L)",
                 };
                 if ui
-                    .selectable_label(self.config.view.list_visible, "☰")
+                    .selectable_label(list_shown, "☰")
                     .on_hover_text(list_hint)
                     .clicked()
                 {

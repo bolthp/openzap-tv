@@ -53,7 +53,7 @@ keys, so keep it private.
 | `F` / double-click video | fullscreen |
 | `Esc` | leave fullscreen |
 | `M` / mouse wheel over video | mute / volume |
-| `L` | show / hide the channel list |
+| `L` | show / hide the channel list (fullscreen: keep it open) |
 | `A` | next audio track (when the stream has several) |
 | `Z` | picture size: auto, 16:9, 4:3, fill (crop), stretch |
 | `T` | always on top |
@@ -61,6 +61,9 @@ keys, so keep it private.
 
 Moving the mouse over the video brings up the bar with the programme guide
 and the controls; it hides again after a few seconds.
+In fullscreen (or with the list hidden), moving the mouse to the window edge
+where the list belongs slides it in over the video; it slides away when the
+mouse leaves it, unless pinned with `L` or the list button.
 
 ## Troubleshooting
 

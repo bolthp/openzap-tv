@@ -22,6 +22,7 @@ use openzap::tracks::{self, AudioTrack};
 
 use crate::settings::{self, Outcome, SettingsDraft};
 use crate::video::VideoView;
+use list::ListOverlay;
 use view::{BAR_START_SECS, BarState};
 
 /// What the current stream is doing, as shown on top of the video.
@@ -173,6 +174,10 @@ pub struct App {
     scroll_to: Option<usize>,
     /// The theme still needs to be sent to egui.
     view_pending: bool,
+    /// The window is fullscreen (as of the start of this frame).
+    fullscreen: bool,
+    /// The channel list over the video when it is not docked.
+    list_overlay: ListOverlay,
     /// The window level last sent (true = always on top).
     on_top_applied: Option<bool>,
     /// Short on-screen message and the input time (seconds) it expires at.
@@ -264,6 +269,8 @@ impl App {
             scroll_to: None,
             view_pending: true,
             on_top_applied: None,
+            fullscreen: false,
+            list_overlay: ListOverlay::default(),
             osd: None,
             info: InfoOverlay::default(),
             favorites_only: false,
@@ -748,7 +755,14 @@ impl App {
         self.osd = Some((text.into(), time + OSD_SECS));
     }
 
+    /// Windowed: docks or hides the list. Fullscreen (or with the list
+    /// hidden): pins or unpins the list over the video.
     fn toggle_list(&mut self, time: f64) {
+        if self.fullscreen {
+            self.list_overlay.pinned = !self.list_overlay.pinned;
+            return;
+        }
+        self.list_overlay.pinned = false;
         self.config.view.list_visible = !self.config.view.list_visible;
         self.pending_save = true;
         if !self.config.view.list_visible {
@@ -872,7 +886,10 @@ impl eframe::App for App {
         self.handle_shortcuts(ui.ctx());
         self.apply_view(ui.ctx());
         let fullscreen = is_fullscreen(ui.ctx());
-        if !fullscreen && self.config.view.list_visible {
+        self.fullscreen = fullscreen;
+        let docked = !fullscreen && self.config.view.list_visible;
+        let screen = ui.max_rect();
+        if docked {
             let panel = match self.config.view.list_side {
                 Side::Left => egui::Panel::left("channels"),
                 Side::Right => egui::Panel::right("channels"),
@@ -885,6 +902,9 @@ impl eframe::App for App {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
             .show(ui, |ui| self.video_area(ui, fullscreen, now));
+        if !docked {
+            self.list_overlay(ui.ctx(), screen, now);
+        }
         let ctx = ui.ctx().clone();
         if let Some(draft) = &mut self.settings
             && let Some(outcome) = settings::show(&ctx, draft)
@@ -1338,6 +1358,22 @@ mod tests {
         // Going fullscreen drops the level right away.
         app.set_fullscreen(&ctx, true);
         assert_eq!(app.on_top_applied, Some(false));
+    }
+
+    #[test]
+    fn list_key_pins_the_overlay_in_fullscreen_and_docks_otherwise() {
+        let mut app = App::new(Playlist::default(), Epg::default(), vec![]);
+        app.fullscreen = true;
+        app.toggle_list(0.0);
+        assert!(app.list_overlay.pinned);
+        assert!(app.config.view.list_visible, "docking is left alone");
+        app.toggle_list(0.0);
+        assert!(!app.list_overlay.pinned);
+
+        app.fullscreen = false;
+        app.toggle_list(0.0);
+        assert!(!app.config.view.list_visible);
+        assert!(app.pending_save);
     }
 
     #[test]
