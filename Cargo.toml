@@ -6,6 +6,9 @@ license = "GPL-3.0-or-later"
 
 [dependencies]
 eframe = { version = "0.37.0", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "glow", "links", "system_fonts", "wayland", "web_screen_reader", "x11"] }
+# Not a new crate (eframe already uses egui): only turns on the bundled
+# monochrome icon fonts, so symbols like ⏹ 🔊 ⛶ look the same everywhere.
+egui = { version = "0.37.0", default-features = false, features = ["monochrome_emoji_fonts"] }
 flate2 = "1.1.10"
 libloading = "0.9.0"
 quick-xml = "0.42.0"

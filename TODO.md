@@ -11,7 +11,6 @@ Backlog, roughly in priority order. Move items to a commit message when done.
 - [ ] Give up on streams that never deliver a frame (e.g. 20 s in "Loading...")
       with a clear message instead of waiting forever.
 - [ ] Check `PageUp` / `PageDown` channel switching on Windows (not tested yet).
-- [ ] Scroll the channel list to the channel switched to with `PageUp`/`PageDown`.
 
 ## Inspired by OTT-Play
 
@@ -27,8 +26,7 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
       replaces "Day schedule" below.
 - [ ] Channel numbers, digit entry to jump, previous channel (`Backspace`).
 - [ ] `I` cycles: channel + programme → programme description → stream info → off.
-- [ ] Audio track / subtitle switching (`A` / `S`).
-- [ ] Aspect ratio / zoom (`Z`), always on top, restart stream.
+- [ ] Subtitle switching (`S`); restart stream.
 - [ ] Fullscreen-first navigation: channel list and group picker as overlays
       over the video, fully usable from the keyboard (and a remote).
 - [ ] Several playlists (providers) at once.
@@ -45,7 +43,16 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
 
 ## Interface
 
-- [ ] Design pass over the whole UI (layout, spacing, typography, icons).
+- [ ] Design pass: own font (e.g. Inter) and an icon font (e.g. Phosphor via
+      `egui-phosphor`) instead of emoji-style symbols, spacing, a custom
+      dark/light palette, hover/press animations.
+- [ ] Channel logos (`tvg-logo`) in the list and the bar (download + cache).
+- [ ] Remember the window size/position; per-channel picture size.
+- [ ] Toolkit question (decided: stay on egui for now). Alternatives looked at:
+      Slint (declarative, polished widgets, can render under an OpenGL
+      underlay), iced (Elm-style), Tauri/Dioxus (web UI — embedding mpv's
+      video is much harder there). egui fits the mpv OpenGL embedding well
+      and can look good with styling; revisit only if styling hits limits.
 - [ ] File picker for playlist/EPG instead of typing paths.
 
 ## Settings

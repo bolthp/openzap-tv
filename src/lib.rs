@@ -12,3 +12,4 @@ pub mod platform;
 pub mod player;
 pub mod source;
 pub mod streaminfo;
+pub mod tracks;

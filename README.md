@@ -10,6 +10,10 @@ Desktop IPTV player for Windows, Linux and macOS: HLS/HTTP streams, M3U playlist
 - Search, filter by group, favorites
 - "On air now" and "next" for every channel
 - Video plays inside the main window (libmpv, OpenGL)
+- Channel list on the left or right (or hidden); the programme guide and the
+  controls slide up over the video
+- Audio track switching, picture size (aspect ratio, crop, stretch), always on top
+- Dark, light or system theme
 - Stream info: resolution, codecs, frame rate, HDR, hardware/software decoding, bitrate
 
 ## Install
@@ -43,12 +47,19 @@ keys, so keep it private.
 
 | Key | Action |
 |---|---|
+| click a channel | play it (right-click: add to / remove from favorites) |
+| `PageUp` / `PageDown` | previous / next channel |
 | `F` / double-click video | fullscreen |
 | `Esc` | leave fullscreen |
-| `M` | mute |
+| `M` / mouse wheel over video | mute / volume |
+| `L` | show / hide the channel list |
+| `A` | next audio track (when the stream has several) |
+| `Z` | picture size: auto, 16:9, 4:3, fill (crop), stretch |
+| `T` | always on top |
 | `I` | show / hide stream info (resolution, codecs, HDR, decoder, bitrate) |
-| mouse wheel over video | volume |
-| `PageUp` / `PageDown` | previous / next channel |
+
+Moving the mouse over the video brings up the bar with the programme guide
+and the controls; it hides again after a few seconds.
 
 ## Troubleshooting
 

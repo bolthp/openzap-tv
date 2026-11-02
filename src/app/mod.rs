@@ -1,4 +1,8 @@
-//! egui application: channel browser with now/next details.
+//! egui application: channel list beside the video, programme guide and
+//! controls in a bar that slides up over the video.
+
+mod list;
+mod view;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -6,19 +10,19 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use eframe::egui;
-use openzap::browse::{Filter, filter_channels, format_duration, groups, progress};
-use openzap::config::{self, Config};
+use openzap::browse::{Filter, filter_channels, groups};
+use openzap::config::{self, Config, Side, Theme};
 use openzap::debuglog::DebugLog;
 use openzap::epg::{Epg, EpgChannel, Programme};
 use openzap::guide::GuideIndex;
 use openzap::loader::{self, Loaded};
 use openzap::m3u::{Channel, Playlist};
-use openzap::mask::mask_url;
-use openzap::player::{Player, PlayerEvent, PropertyKind, PropertyValue};
-use openzap::streaminfo::StreamInfo;
+use openzap::player::{AspectMode, Player, PlayerEvent, PropertyKind, PropertyValue};
+use openzap::tracks::{self, AudioTrack};
 
 use crate::settings::{self, Outcome, SettingsDraft};
 use crate::video::VideoView;
+use view::{BAR_START_SECS, BarState};
 
 /// What the current stream is doing, as shown on top of the video.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +53,26 @@ const OSD_SECS: f64 = 1.5;
 
 /// How long stream info stays up after a channel starts, seconds.
 const INFO_BRIEF_SECS: f64 = 6.0;
+/// How often the audio track list is re-read while the bar is up, seconds.
+const TRACKS_REFRESH_SECS: f64 = 1.0;
+
+/// A user command from a button or menu, applied after the frame is drawn
+/// (while drawing, `self` is borrowed by the UI code).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Action {
+    Stop,
+    ToggleMute,
+    ToggleFavorite(usize),
+    ToggleList,
+    SwapListSide,
+    ToggleOnTop,
+    ToggleFullscreen,
+    SetAspect(AspectMode),
+    SetAudio(i64),
+    OpenSettings,
+    Reload,
+}
+
 /// How often shown stream info is re-read from mpv (bitrate changes), seconds.
 const INFO_REFRESH_SECS: f64 = 1.0;
 
@@ -135,13 +159,20 @@ pub struct App {
     volume: f64,
     // UI actions are recorded while drawing and applied afterwards.
     pending_play: Option<usize>,
-    pending_stop: bool,
     pending_volume: bool,
     pending_save: bool,
-    pending_favorite: Option<usize>,
+    actions: Vec<Action>,
     stream: StreamState,
     muted: bool,
-    pending_mute: bool,
+    /// The bottom bar (guide and controls).
+    bar: BarState,
+    /// Audio tracks of the current stream.
+    tracks: Vec<AudioTrack>,
+    tracks_refreshed_at: Option<f64>,
+    /// Scroll the list to this channel on the next frame.
+    scroll_to: Option<usize>,
+    /// Window level and theme still need to be sent to the window.
+    view_pending: bool,
     /// Short on-screen message and the input time (seconds) it expires at.
     osd: Option<(String, f64)>,
     info: InfoOverlay,
@@ -220,13 +251,16 @@ impl App {
             status: String::new(),
             volume: 80.0,
             pending_play: None,
-            pending_stop: false,
             pending_volume: false,
             pending_save: false,
-            pending_favorite: None,
+            actions: Vec::new(),
             stream: StreamState::Idle,
             muted: false,
-            pending_mute: false,
+            bar: BarState::default(),
+            tracks: Vec::new(),
+            tracks_refreshed_at: None,
+            scroll_to: None,
+            view_pending: true,
             osd: None,
             info: InfoOverlay::default(),
             favorites_only: false,
@@ -362,33 +396,6 @@ impl App {
         }
     }
 
-    fn top_bar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.heading("OpenZap");
-            if self.loading.is_some() {
-                ui.spinner();
-                ui.weak("Loading sources...");
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Settings").clicked() {
-                    self.settings = Some(SettingsDraft::new(
-                        &self.playlist_input,
-                        &self.epg_input,
-                        &self.config,
-                    ));
-                }
-                let can_reload = self.loading.is_none() && !self.playlist_input.trim().is_empty();
-                if ui
-                    .add_enabled(can_reload, egui::Button::new("Reload"))
-                    .on_hover_text("Load the playlist and guide again")
-                    .clicked()
-                {
-                    self.start_load(ui.ctx());
-                }
-            });
-        });
-    }
-
     /// Takes over the settings from the dialog. Returns true if the sources
     /// changed and must be loaded again.
     fn apply_settings(&mut self, draft: SettingsDraft) -> bool {
@@ -401,6 +408,10 @@ impl App {
         self.playlist_input = playlist;
         self.epg_input = epg;
         self.config.resume_last = draft.resume_last;
+        if draft.theme != self.config.view.theme {
+            self.config.view.theme = draft.theme;
+            self.view_pending = true;
+        }
         if draft.playback != self.config.playback {
             self.config.playback = draft.playback;
             let applied = self.player.as_ref().map(|p| p.apply(&draft.playback));
@@ -465,6 +476,9 @@ impl App {
                 self.notices.push(format!("Cannot watch {name}: {e}"));
             }
         }
+        if let Err(e) = player.set_aspect(self.config.view.aspect) {
+            self.dlog(&format!("cannot set picture size: {e}"));
+        }
         self.player = Some(player);
         true
     }
@@ -523,13 +537,14 @@ impl App {
         let idx = self.visible[next];
         self.selected = Some(idx);
         self.pending_play = Some(idx);
+        self.scroll_to = Some(idx);
     }
 
     fn toggle_mute(&mut self, now: f64) {
         self.muted = !self.muted;
         self.apply_volume();
         let text = if self.muted { "Muted" } else { "Sound on" };
-        self.osd = Some((text.into(), now + OSD_SECS));
+        self.show_osd(text, now);
     }
 
     fn change_volume(&mut self, delta: f64, now: f64) {
@@ -578,11 +593,15 @@ impl App {
             PlayerEvent::Loading => {
                 self.video.clear();
                 self.info.reset();
+                self.tracks.clear();
+                self.tracks_refreshed_at = None;
                 self.stream = StreamState::Opening;
                 self.status = "Loading...".into();
             }
             PlayerEvent::Started => {
                 self.info.stream_started();
+                self.bar.request(BAR_START_SECS);
+                self.tracks_refreshed_at = None;
                 self.stream = StreamState::Playing;
                 self.status = "Playing".into();
             }
@@ -639,290 +658,172 @@ impl App {
         self.visible = filter_channels(&self.playlist, &filter);
     }
 
-    fn channel_list(&mut self, ui: &mut egui::Ui, now: i64) {
-        let mut changed = ui
-            .add(egui::TextEdit::singleline(&mut self.query).hint_text("Search channels"))
-            .changed();
-        changed |= ui
-            .checkbox(&mut self.favorites_only, "Favorites only")
-            .changed();
-
-        egui::ComboBox::from_label("Group")
-            .selected_text(self.group.as_deref().unwrap_or("All"))
-            .show_ui(ui, |ui| {
-                if ui.selectable_label(self.group.is_none(), "All").clicked() {
-                    self.group = None;
-                    changed = true;
-                }
-                for g in &self.groups {
-                    let is_selected = self.group.as_deref() == Some(g);
-                    if ui.selectable_label(is_selected, g).clicked() {
-                        self.group = Some(g.clone());
-                        changed = true;
-                    }
-                }
-            });
-        if changed {
-            self.refilter();
-        }
-
-        ui.label(format!("{} channels", self.visible.len()));
-        ui.separator();
-
-        let row_height = ui.text_style_height(&egui::TextStyle::Body);
-        let font = egui::TextStyle::Body.resolve(ui.style());
-        let (strong, weak) = (ui.visuals().text_color(), ui.visuals().weak_text_color());
-        egui::ScrollArea::vertical().show_rows(ui, row_height, self.visible.len(), |ui, range| {
-            for &idx in &self.visible[range] {
-                let channel = &self.playlist.channels[idx];
-                let is_favorite = self.config.favorites.contains(channel.key());
-                let on_air = self.guide.now_next(&self.epg, idx, now).now;
-
-                // One line: [* ]Name  ·  current programme (dimmed).
-                let mut job = egui::text::LayoutJob::default();
-                let prefix = if is_favorite { "* " } else { "" };
-                job.append(
-                    &format!("{prefix}{}", channel.name),
-                    0.0,
-                    egui::TextFormat::simple(font.clone(), strong),
-                );
-                if let Some(p) = on_air {
-                    job.append(
-                        &format!("   {}", p.title),
-                        0.0,
-                        egui::TextFormat::simple(font.clone(), weak),
-                    );
-                }
-                let response =
-                    ui.add(egui::Button::selectable(self.selected == Some(idx), job).truncate());
-                if response.clicked() {
-                    self.selected = Some(idx);
-                }
-                if response.double_clicked() {
-                    self.pending_play = Some(idx);
-                }
-            }
-        });
-    }
-
-    /// The video with its overlays. `fill` uses all available space
-    /// (fullscreen); otherwise a 16:9 area at the top of the details panel.
-    fn video_area(&mut self, ui: &mut egui::Ui, fill: bool) {
-        let size = if fill {
-            ui.available_size()
-        } else {
-            let width = ui.available_width();
-            egui::vec2(width, (width * 9.0 / 16.0).min(ui.available_height() * 0.6))
-        };
-        let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
-        let painter = ui.painter_at(rect);
-        ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
-
-        let showing_video = self.playing.is_some() && self.video.is_attached();
-        if showing_video {
-            self.video.paint(ui, rect);
-        }
-        let message = overlay_text(&self.stream)
-            .or_else(|| (!showing_video).then(|| "Nothing playing".to_string()));
-        if let Some(text) = message {
-            draw_label(
-                &painter,
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                &text,
-                egui::TextStyle::Heading,
-                ui,
-            );
-        }
-        let time = ui.input(|i| i.time);
-        if showing_video && self.info.is_visible(time) {
-            if self.info.needs_refresh(time)
-                && let Some(player) = &self.player
-            {
-                let info = StreamInfo::from_properties(|name| player.get_property(name));
-                self.info.set_lines(info.lines(), time);
-            }
-            let mut text = self
-                .playing
-                .and_then(|i| self.playlist.channels.get(i))
-                .map(|c| c.name.clone())
-                .unwrap_or_default();
-            for line in &self.info.lines {
-                text.push('\n');
-                text.push_str(line);
-            }
-            let corner = rect.left_top() + egui::vec2(16.0, 16.0);
-            draw_label(
-                &painter,
-                corner,
-                egui::Align2::LEFT_TOP,
-                &text,
-                egui::TextStyle::Body,
-                ui,
-            );
-        }
-        if let Some((text, until)) = &self.osd {
-            if time < *until {
-                let corner = rect.right_top() + egui::vec2(-16.0, 16.0);
-                draw_label(
-                    &painter,
-                    corner,
-                    egui::Align2::RIGHT_TOP,
-                    text,
-                    egui::TextStyle::Heading,
-                    ui,
-                );
-                ui.ctx()
-                    .request_repaint_after(Duration::from_secs_f64(until - time));
-            } else {
-                self.osd = None;
-            }
-        }
-
-        if response.double_clicked() {
-            toggle_fullscreen(ui.ctx());
-        }
-        if response.hovered() {
-            let scroll: f32 = ui.input(|i| {
-                i.events
-                    .iter()
-                    .filter_map(|e| match e {
-                        egui::Event::MouseWheel { delta, .. } => Some(delta.y),
-                        _ => None,
-                    })
-                    .sum()
-            });
-            if scroll != 0.0 {
-                self.change_volume(VOLUME_STEP * f64::from(scroll.signum()), time);
-            }
-        }
-        if let Some(e) = self.video.take_error() {
-            self.status = format!("Video error: {e}");
-        }
-        if !fill {
-            ui.add_space(6.0);
-        }
-    }
-
     /// Global keyboard shortcuts (ignored while typing in a text field).
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         if self.settings.is_some() || ctx.egui_wants_keyboard_input() {
             return;
         }
-        let (fullscreen_key, escape, mute, prev, next, info, time) = ctx.input(|i| {
-            (
-                i.key_pressed(egui::Key::F),
-                i.key_pressed(egui::Key::Escape),
-                i.key_pressed(egui::Key::M),
-                i.key_pressed(egui::Key::PageUp),
-                i.key_pressed(egui::Key::PageDown),
-                i.key_pressed(egui::Key::I),
-                i.time,
-            )
-        });
-        if fullscreen_key {
+        let pressed = |key| ctx.input(|i| i.key_pressed(key));
+        let time = ctx.input(|i| i.time);
+        if pressed(egui::Key::F) {
             toggle_fullscreen(ctx);
         }
-        if escape && is_fullscreen(ctx) {
+        if pressed(egui::Key::Escape) && is_fullscreen(ctx) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
         }
-        if mute {
+        if pressed(egui::Key::M) {
             self.toggle_mute(time);
         }
-        if info {
+        if pressed(egui::Key::I) {
             self.info.toggle();
         }
-        if prev {
+        if pressed(egui::Key::L) {
+            self.toggle_list(time);
+        }
+        if pressed(egui::Key::T) {
+            self.toggle_on_top(time);
+        }
+        if pressed(egui::Key::Z) {
+            self.set_aspect(self.config.view.aspect.next(), time);
+        }
+        if pressed(egui::Key::A) {
+            self.next_audio_track(time);
+        }
+        if pressed(egui::Key::PageUp) {
             self.switch_channel(-1);
         }
-        if next {
+        if pressed(egui::Key::PageDown) {
             self.switch_channel(1);
         }
     }
 
-    fn details(&mut self, ui: &mut egui::Ui, now: i64) {
-        self.video_area(ui, false);
-        for notice in &self.notices {
-            ui.colored_label(egui::Color32::LIGHT_RED, notice);
-        }
-        let Some(selected) = self.selected else {
-            ui.label("Select a channel on the left.");
-            return;
-        };
-        let Some(channel) = self.playlist.channels.get(selected) else {
-            return;
-        };
-
-        ui.heading(&channel.name);
-        if let Some(group) = &channel.group_title {
-            ui.label(format!("Group: {group}"));
-        }
-        // Never show the raw URL: it may contain an access key.
-        ui.monospace(mask_url(&channel.url));
-
-        ui.horizontal(|ui| {
-            if ui.button("Play").clicked() {
-                self.pending_play = Some(selected);
-            }
-            if ui.button("Stop").clicked() {
-                self.pending_stop = true;
-            }
-            if ui
-                .button(if self.muted { "Unmute" } else { "Mute" })
-                .clicked()
-            {
-                self.pending_mute = true;
-            }
-            let label = if self.config.favorites.contains(channel.key()) {
-                "Remove from favorites"
-            } else {
-                "Add to favorites"
-            };
-            if ui.button(label).clicked() {
-                self.pending_favorite = Some(selected);
-            }
-            let slider = ui.add(egui::Slider::new(&mut self.volume, 0.0..=100.0).text("Volume"));
-            if slider.changed() {
-                self.pending_volume = true;
-            }
-            if slider.drag_stopped() {
-                self.pending_save = true;
-            }
-        });
-        if !self.status.is_empty() {
-            let marker = if self.playing == Some(selected) {
-                "* "
-            } else {
-                ""
-            };
-            ui.label(format!("{marker}{}", self.status));
-        }
-        ui.separator();
-
-        let nn = self.guide.now_next(&self.epg, selected, now);
-        match nn.now {
-            Some(p) => {
-                ui.strong(format!("Now: {}", p.title));
-                ui.add(
-                    egui::ProgressBar::new(progress(p, now))
-                        .text(format!("ends in {}", format_duration(p.stop - now))),
-                );
-                if let Some(desc) = &p.desc {
-                    ui.label(desc);
+    /// Applies the actions recorded while drawing.
+    fn apply_actions(&mut self, ctx: &egui::Context) {
+        let time = ctx.input(|i| i.time);
+        for action in std::mem::take(&mut self.actions) {
+            match action {
+                Action::Stop => self.stop(),
+                Action::ToggleMute => self.toggle_mute(time),
+                Action::ToggleFavorite(idx) => self.toggle_favorite(idx),
+                Action::ToggleList => self.toggle_list(time),
+                Action::SwapListSide => {
+                    self.config.view.list_side = match self.config.view.list_side {
+                        Side::Left => Side::Right,
+                        Side::Right => Side::Left,
+                    };
+                    self.pending_save = true;
                 }
-            }
-            None => {
-                ui.label("Now: no data");
+                Action::ToggleOnTop => self.toggle_on_top(time),
+                Action::ToggleFullscreen => toggle_fullscreen(ctx),
+                Action::SetAspect(mode) => self.set_aspect(mode, time),
+                Action::SetAudio(id) => self.select_audio_track(id, time),
+                Action::OpenSettings => {
+                    self.settings = Some(SettingsDraft::new(
+                        &self.playlist_input,
+                        &self.epg_input,
+                        &self.config,
+                    ));
+                }
+                Action::Reload => self.start_load(ctx),
             }
         }
-        if let Some(p) = nn.next {
-            ui.add_space(8.0);
-            ui.label(format!(
-                "Next: {} (in {})",
-                p.title,
-                format_duration(p.start - now)
-            ));
+    }
+
+    fn is_favorite(&self, idx: usize) -> bool {
+        self.playlist
+            .channels
+            .get(idx)
+            .is_some_and(|c| self.config.favorites.contains(c.key()))
+    }
+
+    fn show_osd(&mut self, text: impl Into<String>, time: f64) {
+        self.osd = Some((text.into(), time + OSD_SECS));
+    }
+
+    fn toggle_list(&mut self, time: f64) {
+        self.config.view.list_visible = !self.config.view.list_visible;
+        self.pending_save = true;
+        if !self.config.view.list_visible {
+            self.show_osd("List hidden (L to show)", time);
         }
+    }
+
+    fn toggle_on_top(&mut self, time: f64) {
+        self.config.view.always_on_top = !self.config.view.always_on_top;
+        self.view_pending = true;
+        self.pending_save = true;
+        let text = if self.config.view.always_on_top {
+            "Always on top"
+        } else {
+            "Normal window"
+        };
+        self.show_osd(text, time);
+    }
+
+    fn set_aspect(&mut self, mode: AspectMode, time: f64) {
+        self.config.view.aspect = mode;
+        self.pending_save = true;
+        if let Some(Err(e)) = self.player.as_ref().map(|p| p.set_aspect(mode)) {
+            self.status = format!("Cannot change picture size: {e}");
+        }
+        self.show_osd(format!("Picture: {}", mode.label()), time);
+    }
+
+    /// Re-reads the audio tracks from mpv, at most once per interval.
+    fn refresh_tracks(&mut self, time: f64) {
+        let due = self
+            .tracks_refreshed_at
+            .is_none_or(|t| time - t >= TRACKS_REFRESH_SECS);
+        if !due {
+            return;
+        }
+        if let Some(player) = &self.player {
+            self.tracks = tracks::audio_tracks(|name| player.get_property(name));
+        }
+        self.tracks_refreshed_at = Some(time);
+    }
+
+    fn next_audio_track(&mut self, time: f64) {
+        self.tracks_refreshed_at = None;
+        self.refresh_tracks(time);
+        match tracks::next_track(&self.tracks).map(|t| t.id) {
+            Some(id) => self.select_audio_track(id, time),
+            None => self.show_osd("No other audio tracks", time),
+        }
+    }
+
+    fn select_audio_track(&mut self, id: i64, time: f64) {
+        if let Some(Err(e)) = self.player.as_ref().map(|p| p.set_audio_track(id)) {
+            self.status = format!("Cannot switch audio: {e}");
+            return;
+        }
+        for t in &mut self.tracks {
+            t.selected = t.id == id;
+        }
+        let label = self
+            .tracks
+            .iter()
+            .find(|t| t.id == id)
+            .map_or_else(|| format!("Track {id}"), |t| t.label());
+        self.show_osd(format!("Audio: {label}"), time);
+    }
+
+    /// Sends the window level and theme to the window.
+    fn apply_view(&mut self, ctx: &egui::Context) {
+        if !std::mem::take(&mut self.view_pending) {
+            return;
+        }
+        let level = if self.config.view.always_on_top {
+            egui::WindowLevel::AlwaysOnTop
+        } else {
+            egui::WindowLevel::Normal
+        };
+        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(level));
+        ctx.set_theme(match self.config.view.theme {
+            Theme::System => egui::ThemePreference::System,
+            Theme::Dark => egui::ThemePreference::Dark,
+            Theme::Light => egui::ThemePreference::Light,
+        });
     }
 }
 
@@ -941,17 +842,21 @@ impl eframe::App for App {
         self.poll_loading();
         self.poll_player();
         self.handle_shortcuts(ui.ctx());
-        if is_fullscreen(ui.ctx()) {
-            egui::CentralPanel::default()
-                .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
-                .show(ui, |ui| self.video_area(ui, true));
-        } else {
-            egui::Panel::top("top").show(ui, |ui| self.top_bar(ui));
-            egui::Panel::left("channels")
-                .default_size(320.0)
-                .show(ui, |ui| self.channel_list(ui, now));
-            egui::CentralPanel::default().show(ui, |ui| self.details(ui, now));
+        self.apply_view(ui.ctx());
+        let fullscreen = is_fullscreen(ui.ctx());
+        if !fullscreen && self.config.view.list_visible {
+            let panel = match self.config.view.list_side {
+                Side::Left => egui::Panel::left("channels"),
+                Side::Right => egui::Panel::right("channels"),
+            };
+            panel
+                .default_size(340.0)
+                .min_size(240.0)
+                .show(ui, |ui| self.channel_panel(ui, now));
         }
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
+            .show(ui, |ui| self.video_area(ui, fullscreen, now));
         let ctx = ui.ctx().clone();
         if let Some(draft) = &mut self.settings
             && let Some(outcome) = settings::show(&ctx, draft)
@@ -966,16 +871,7 @@ impl eframe::App for App {
         if let Some(idx) = self.pending_play.take() {
             self.play(idx);
         }
-        if let Some(idx) = self.pending_favorite.take() {
-            self.toggle_favorite(idx);
-        }
-        if std::mem::take(&mut self.pending_stop) {
-            self.stop();
-        }
-        if std::mem::take(&mut self.pending_mute) {
-            let time = ui.input(|i| i.time);
-            self.toggle_mute(time);
-        }
+        self.apply_actions(&ctx);
         if std::mem::take(&mut self.pending_volume) {
             self.apply_volume();
         }
@@ -1367,6 +1263,82 @@ mod tests {
         assert!(app.info.lines.is_empty());
         app.apply_event(PlayerEvent::Started);
         assert!(app.info.is_visible(1.0));
+    }
+
+    #[test]
+    fn view_actions_change_and_persist_settings() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+        let ctx = egui::Context::default();
+        app.view_pending = false;
+
+        app.actions = vec![
+            Action::ToggleList,
+            Action::SwapListSide,
+            Action::ToggleOnTop,
+            Action::SetAspect(AspectMode::Fill),
+        ];
+        app.apply_actions(&ctx);
+        let view = app.config.view;
+        assert!(!view.list_visible);
+        assert_eq!(view.list_side, Side::Right);
+        assert!(view.always_on_top && app.view_pending);
+        assert_eq!(view.aspect, AspectMode::Fill);
+        assert!(app.pending_save && app.actions.is_empty());
+        assert_eq!(
+            app.osd.map(|(t, _)| t).as_deref(),
+            Some("Picture: Fill (crop)")
+        );
+    }
+
+    #[test]
+    fn favorite_action_and_lookup() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+        app.actions.push(Action::ToggleFavorite(2));
+        app.apply_actions(&egui::Context::default());
+        assert!(app.is_favorite(2) && !app.is_favorite(0) && !app.is_favorite(99));
+    }
+
+    #[test]
+    fn audio_cycling_without_tracks_says_so() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+        app.next_audio_track(1.0);
+        assert_eq!(
+            app.osd.map(|(t, _)| t).as_deref(),
+            Some("No other audio tracks")
+        );
+    }
+
+    #[test]
+    fn channel_start_brings_up_the_bar_and_rereads_tracks() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+        app.tracks_refreshed_at = Some(0.0);
+        app.apply_event(PlayerEvent::Started);
+        assert!(app.tracks_refreshed_at.is_none());
+        assert!(app.bar.is_visible(100.0, false));
+    }
+
+    #[test]
+    fn keyboard_switch_scrolls_the_list() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+        app.playing = Some(0);
+        app.switch_channel(1);
+        assert_eq!(app.scroll_to, Some(1));
+    }
+
+    #[test]
+    fn theme_change_is_saved_and_applied() {
+        let mut app = App::new(Playlist::default(), Epg::default(), vec![]);
+        app.view_pending = false;
+        let mut d = draft(&app);
+        d.theme = Theme::Dark;
+        app.apply_settings(d);
+        assert_eq!(app.config.view.theme, Theme::Dark);
+        assert!(app.view_pending && app.pending_save);
     }
 
     #[test]

@@ -111,6 +111,63 @@ impl HardwareDecoding {
     }
 }
 
+/// How the picture is fitted into the video area.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AspectMode {
+    /// The stream's own aspect ratio, letterboxed.
+    #[default]
+    Auto,
+    Ratio16x9,
+    Ratio4x3,
+    /// Keep the aspect ratio, crop the edges to fill the area.
+    Fill,
+    /// Ignore the aspect ratio, stretch to the area.
+    Stretch,
+}
+
+impl AspectMode {
+    pub const ALL: [AspectMode; 5] = [
+        AspectMode::Auto,
+        AspectMode::Ratio16x9,
+        AspectMode::Ratio4x3,
+        AspectMode::Fill,
+        AspectMode::Stretch,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AspectMode::Auto => "Auto",
+            AspectMode::Ratio16x9 => "16:9",
+            AspectMode::Ratio4x3 => "4:3",
+            AspectMode::Fill => "Fill (crop)",
+            AspectMode::Stretch => "Stretch",
+        }
+    }
+
+    /// The next mode, wrapping around (for a cycle key).
+    pub fn next(self) -> Self {
+        let i = Self::ALL.iter().position(|&m| m == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+
+    /// The mpv properties for this mode; every mode sets all of them, so
+    /// switching never leaves a previous mode's setting behind.
+    fn mpv_properties(self) -> [(&'static str, &'static str); 3] {
+        let (aspect, panscan, keep) = match self {
+            AspectMode::Auto => ("no", "0", "yes"),
+            AspectMode::Ratio16x9 => ("16:9", "0", "yes"),
+            AspectMode::Ratio4x3 => ("4:3", "0", "yes"),
+            AspectMode::Fill => ("no", "1", "yes"),
+            AspectMode::Stretch => ("no", "0", "no"),
+        };
+        [
+            ("video-aspect-override", aspect),
+            ("panscan", panscan),
+            ("keepaspect", keep),
+        ]
+    }
+}
+
 /// Playback options the user can change; applied at creation and live.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlaybackSettings {
@@ -324,6 +381,19 @@ impl Player {
             self.set_property(name, &value)?;
         }
         Ok(())
+    }
+
+    pub fn set_aspect(&self, mode: AspectMode) -> Result<(), PlayerError> {
+        for (name, value) in mode.mpv_properties() {
+            self.set_property(name, value)?;
+        }
+        Ok(())
+    }
+
+    /// Switches to the audio track with mpv's track `id`
+    /// (see [`crate::tracks::audio_tracks`]).
+    pub fn set_audio_track(&self, id: i64) -> Result<(), PlayerError> {
+        self.set_property("aid", &id.to_string())
     }
 
     /// Volume in percent (0–130).
@@ -546,6 +616,30 @@ mod tests {
         // Nothing is playing, so there is no video.
         assert_eq!(p.get_property("video-params/w"), None);
         assert_eq!(p.get_property("no-such-property"), None);
+    }
+
+    #[test]
+    fn every_aspect_mode_is_accepted() {
+        require_mpv!();
+        let p = headless();
+        for mode in AspectMode::ALL {
+            assert_eq!(p.set_aspect(mode), Ok(()), "{mode:?}");
+        }
+        assert_eq!(p.get_property("keepaspect").as_deref(), Some("no"));
+        p.set_aspect(AspectMode::Auto).unwrap();
+        assert_eq!(p.get_property("keepaspect").as_deref(), Some("yes"));
+    }
+
+    #[test]
+    fn aspect_modes_cycle_through_all() {
+        let mut mode = AspectMode::Auto;
+        let mut seen = Vec::new();
+        for _ in 0..AspectMode::ALL.len() {
+            seen.push(mode);
+            mode = mode.next();
+        }
+        assert_eq!(mode, AspectMode::Auto);
+        assert_eq!(seen, AspectMode::ALL);
     }
 
     /// Waits for the next Property event about `name`.

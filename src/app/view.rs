@@ -1,0 +1,445 @@
+//! The video area: picture, status overlays and the bottom bar with the
+//! programme guide and playback controls, which slides in from below.
+
+use std::time::Duration;
+
+use eframe::egui;
+use openzap::browse::{format_duration, progress};
+use openzap::player::AspectMode;
+use openzap::streaminfo::StreamInfo;
+
+use super::{Action, App, StreamState, VOLUME_STEP, draw_label, overlay_text};
+
+/// How long the bar stays after the mouse stops moving, seconds.
+pub(super) const BAR_IDLE_SECS: f64 = 3.0;
+/// How long the bar is shown when a channel starts, seconds.
+pub(super) const BAR_START_SECS: f64 = 5.0;
+/// Slide animation length, seconds.
+const BAR_ANIMATION_SECS: f32 = 0.18;
+
+/// When the bottom bar is shown. Times are egui input times in seconds.
+#[derive(Debug)]
+pub(super) struct BarState {
+    until: f64,
+    /// Show for this long from the next frame on (set where no time is known).
+    pending: Option<f64>,
+    /// Height measured on the previous frame, used to place the bar.
+    height: f32,
+}
+
+impl Default for BarState {
+    fn default() -> Self {
+        BarState {
+            until: 0.0,
+            pending: None,
+            height: 150.0,
+        }
+    }
+}
+
+impl BarState {
+    pub(super) fn show_for(&mut self, time: f64, secs: f64) {
+        self.until = self.until.max(time + secs);
+    }
+
+    pub(super) fn request(&mut self, secs: f64) {
+        self.pending = Some(self.pending.map_or(secs, |p| p.max(secs)));
+    }
+
+    /// `keep`: something holds the bar open (pointer over it, nothing playing).
+    pub(super) fn is_visible(&mut self, time: f64, keep: bool) -> bool {
+        if let Some(secs) = self.pending.take() {
+            self.show_for(time, secs);
+        }
+        keep || time < self.until
+    }
+
+    /// Seconds until the bar hides by itself, if it is on a timer.
+    fn remaining(&self, time: f64) -> Option<f64> {
+        (time < self.until).then_some(self.until - time)
+    }
+}
+
+impl App {
+    /// The video with its overlays, filling the available space.
+    pub(super) fn video_area(&mut self, ui: &mut egui::Ui, fullscreen: bool, now: i64) {
+        let rect = ui.available_rect_before_wrap();
+        let response = ui.allocate_rect(rect, egui::Sense::click());
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 0.0, egui::Color32::BLACK);
+        let time = ui.input(|i| i.time);
+
+        let showing_video = self.playing.is_some() && self.video.is_attached();
+        if showing_video {
+            self.video.paint(ui, rect);
+        }
+        let hint = if self.config.view.list_visible && !fullscreen {
+            "Choose a channel in the list"
+        } else {
+            "Nothing playing"
+        };
+        let message =
+            overlay_text(&self.stream).or_else(|| (!showing_video).then(|| hint.to_string()));
+        if let Some(text) = message {
+            draw_label(
+                &painter,
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                &text,
+                egui::TextStyle::Heading,
+                ui,
+            );
+        }
+        if showing_video {
+            self.stream_info(ui, &painter, rect, time);
+        }
+        self.osd_message(ui, &painter, rect, time);
+
+        // Mouse activity over the video brings the bar up.
+        let pointer_over = ui.rect_contains_pointer(rect);
+        let moved = ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO);
+        if pointer_over && moved || response.clicked() {
+            self.bar.show_for(time, BAR_IDLE_SECS);
+        }
+        if response.double_clicked() {
+            self.actions.push(Action::ToggleFullscreen);
+        }
+        if response.hovered() {
+            let scroll: f32 = ui.input(|i| {
+                i.events
+                    .iter()
+                    .filter_map(|e| match e {
+                        egui::Event::MouseWheel { delta, .. } => Some(delta.y),
+                        _ => None,
+                    })
+                    .sum()
+            });
+            if scroll != 0.0 {
+                self.change_volume(VOLUME_STEP * f64::from(scroll.signum()), time);
+            }
+        }
+
+        let bar_top = rect.bottom() - self.bar.height;
+        let over_bar = pointer_over
+            && ui
+                .input(|i| i.pointer.hover_pos())
+                .is_some_and(|p| p.y >= bar_top);
+        let idle = matches!(self.stream, StreamState::Idle | StreamState::Failed(_));
+        let visible = self.bar.is_visible(time, over_bar || idle);
+        let shown = ui.ctx().animate_bool_with_time(
+            egui::Id::unique("bottom-bar"),
+            visible,
+            BAR_ANIMATION_SECS,
+        );
+        if shown > 0.0 {
+            self.bottom_bar(ui, rect, shown, now, time);
+        }
+        if let Some(secs) = self.bar.remaining(time) {
+            ui.ctx()
+                .request_repaint_after(Duration::from_secs_f64(secs.max(0.05)));
+        }
+        if fullscreen && !visible && pointer_over {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::None);
+        }
+        if let Some(e) = self.video.take_error() {
+            self.status = format!("Video error: {e}");
+        }
+    }
+
+    /// Technical details in the top-left corner (see `InfoOverlay`).
+    fn stream_info(&mut self, ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, time: f64) {
+        if !self.info.is_visible(time) {
+            return;
+        }
+        if self.info.needs_refresh(time)
+            && let Some(player) = &self.player
+        {
+            let info = StreamInfo::from_properties(|name| player.get_property(name));
+            self.info.set_lines(info.lines(), time);
+        }
+        let mut text = self
+            .playing
+            .and_then(|i| self.playlist.channels.get(i))
+            .map(|c| c.name.clone())
+            .unwrap_or_default();
+        for line in &self.info.lines {
+            text.push('\n');
+            text.push_str(line);
+        }
+        let corner = rect.left_top() + egui::vec2(16.0, 16.0);
+        draw_label(
+            painter,
+            corner,
+            egui::Align2::LEFT_TOP,
+            &text,
+            egui::TextStyle::Body,
+            ui,
+        );
+    }
+
+    /// Short messages (volume, mute, modes) in the top-right corner.
+    fn osd_message(&mut self, ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, time: f64) {
+        let Some((text, until)) = &self.osd else {
+            return;
+        };
+        if time < *until {
+            let corner = rect.right_top() + egui::vec2(-16.0, 16.0);
+            draw_label(
+                painter,
+                corner,
+                egui::Align2::RIGHT_TOP,
+                text,
+                egui::TextStyle::Heading,
+                ui,
+            );
+            ui.ctx()
+                .request_repaint_after(Duration::from_secs_f64(until - time));
+        } else {
+            self.osd = None;
+        }
+    }
+
+    /// The bar at the bottom of the video; `shown` (0–1) is how far it has
+    /// slid in.
+    fn bottom_bar(
+        &mut self,
+        ui: &mut egui::Ui,
+        video: egui::Rect,
+        shown: f32,
+        now: i64,
+        time: f64,
+    ) {
+        let height = self.bar.height;
+        let top = video.bottom() - height * shown;
+        let bar = egui::Rect::from_min_max(
+            egui::pos2(video.left(), top),
+            egui::pos2(video.right(), top + height),
+        );
+        ui.painter().with_clip_rect(video).rect_filled(
+            bar,
+            0.0,
+            egui::Color32::from_black_alpha(215),
+        );
+
+        let inner = bar.shrink2(egui::vec2(16.0, 12.0));
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(inner)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        child.set_clip_rect(video.intersect(ui.clip_rect()));
+        // Always dark: the bar sits on top of the picture. (`visuals_mut`
+        // changes only this Ui; `set_visuals` would change the whole app.)
+        *child.visuals_mut() = egui::Visuals::dark();
+        self.refresh_tracks(time);
+        self.bar_guide(&mut child, now);
+        child.add_space(8.0);
+        self.bar_controls(&mut child);
+        self.bar.height = child.min_rect().height() + 24.0;
+    }
+
+    /// Channel name and the programme guide for it.
+    fn bar_guide(&self, ui: &mut egui::Ui, now: i64) {
+        let current = self.playing.or(self.selected);
+        let Some((idx, channel)) =
+            current.and_then(|i| self.playlist.channels.get(i).map(|c| (i, c)))
+        else {
+            ui.label(egui::RichText::new("No channel").heading());
+            return;
+        };
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(&channel.name).heading().strong());
+            if let Some(group) = &channel.group_title {
+                ui.weak(group);
+            }
+            if !matches!(self.stream, StreamState::Playing) && !self.status.is_empty() {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.weak(&self.status);
+                });
+            }
+        });
+
+        let nn = self.guide.now_next(&self.epg, idx, now);
+        let Some(p) = nn.now else {
+            ui.weak("No programme information");
+            return;
+        };
+        ui.horizontal(|ui| {
+            ui.strong(&p.title);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.weak(format!("ends in {}", format_duration(p.stop - now)));
+            });
+        });
+        let (line, _) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 4.0), egui::Sense::hover());
+        let painter = ui.painter();
+        painter.rect_filled(line, 2.0, egui::Color32::from_white_alpha(40));
+        let mut done = line;
+        done.set_width(line.width() * progress(p, now));
+        painter.rect_filled(done, 2.0, ui.visuals().selection.bg_fill);
+
+        if let Some(desc) = &p.desc {
+            let mut job = egui::text::LayoutJob::single_section(
+                desc.clone(),
+                egui::TextFormat::simple(
+                    egui::TextStyle::Body.resolve(ui.style()),
+                    ui.visuals().weak_text_color(),
+                ),
+            );
+            job.wrap = egui::text::TextWrapping {
+                max_width: ui.available_width(),
+                max_rows: 2,
+                break_anywhere: false,
+                overflow_character: Some('…'),
+            };
+            ui.label(job);
+        }
+        if let Some(next) = nn.next {
+            ui.weak(format!(
+                "Next in {}: {}",
+                format_duration(next.start - now),
+                next.title
+            ));
+        }
+    }
+
+    fn bar_controls(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            let playing = self.playing.is_some();
+            let (icon, hint) = if playing {
+                ("⏹", "Stop")
+            } else {
+                ("▶", "Play")
+            };
+            let can_play = playing || self.selected.is_some();
+            if ui
+                .add_enabled(can_play, egui::Button::new(icon))
+                .on_hover_text(hint)
+                .clicked()
+            {
+                match (playing, self.selected) {
+                    (true, _) => self.actions.push(Action::Stop),
+                    (false, Some(idx)) => self.pending_play = Some(idx),
+                    (false, None) => {}
+                }
+            }
+            let mute_icon = if self.muted { "🔇" } else { "🔊" };
+            if ui.button(mute_icon).on_hover_text("Mute (M)").clicked() {
+                self.actions.push(Action::ToggleMute);
+            }
+            let slider = ui.add(
+                egui::Slider::new(&mut self.volume, 0.0..=100.0)
+                    .show_value(false)
+                    .trailing_fill(true),
+            );
+            if slider.changed() {
+                self.pending_volume = true;
+            }
+            if slider.drag_stopped() {
+                self.pending_save = true;
+            }
+            if let Some(idx) = self.playing.or(self.selected) {
+                let (star, hint) = if self.is_favorite(idx) {
+                    ("★", "Remove from favorites")
+                } else {
+                    ("☆", "Add to favorites")
+                };
+                if ui.button(star).on_hover_text(hint).clicked() {
+                    self.actions.push(Action::ToggleFavorite(idx));
+                }
+            }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("⛶").on_hover_text("Fullscreen (F)").clicked() {
+                    self.actions.push(Action::ToggleFullscreen);
+                }
+                let list_hint = if self.config.view.list_visible {
+                    "Hide the channel list (L)"
+                } else {
+                    "Show the channel list (L)"
+                };
+                if ui
+                    .selectable_label(self.config.view.list_visible, "☰")
+                    .on_hover_text(list_hint)
+                    .clicked()
+                {
+                    self.actions.push(Action::ToggleList);
+                }
+                if ui
+                    .selectable_label(self.config.view.always_on_top, "📌")
+                    .on_hover_text("Always on top (T)")
+                    .clicked()
+                {
+                    self.actions.push(Action::ToggleOnTop);
+                }
+                if ui.button("⚙").on_hover_text("Settings").clicked() {
+                    self.actions.push(Action::OpenSettings);
+                }
+                let aspect = self.config.view.aspect;
+                egui::ComboBox::from_id_salt("aspect")
+                    .selected_text(aspect.label())
+                    .show_ui(ui, |ui| {
+                        for mode in AspectMode::ALL {
+                            if ui.selectable_label(mode == aspect, mode.label()).clicked() {
+                                self.actions.push(Action::SetAspect(mode));
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text("Picture size (Z)");
+                if self.tracks.len() > 1 {
+                    let current = self
+                        .tracks
+                        .iter()
+                        .find(|t| t.selected)
+                        .map_or_else(|| "Audio".to_string(), |t| t.label());
+                    egui::ComboBox::from_id_salt("audio")
+                        .selected_text(current)
+                        .width(180.0)
+                        .truncate()
+                        .show_ui(ui, |ui| {
+                            for t in &self.tracks {
+                                if ui.selectable_label(t.selected, t.label()).clicked() {
+                                    self.actions.push(Action::SetAudio(t.id));
+                                }
+                            }
+                        })
+                        .response
+                        .on_hover_text("Audio track (A)");
+                }
+            });
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bar_hides_after_its_time_unless_held() {
+        let mut bar = BarState::default();
+        assert!(!bar.is_visible(0.0, false));
+        assert!(bar.is_visible(0.0, true));
+
+        bar.show_for(10.0, BAR_IDLE_SECS);
+        assert!(bar.is_visible(10.0 + BAR_IDLE_SECS - 0.1, false));
+        assert!(!bar.is_visible(10.0 + BAR_IDLE_SECS, false));
+        assert_eq!(bar.remaining(100.0), None);
+    }
+
+    #[test]
+    fn requested_show_starts_on_next_frame_and_never_shortens() {
+        let mut bar = BarState::default();
+        bar.show_for(0.0, 10.0);
+        bar.request(1.0); // shorter than what is already scheduled
+        assert!(bar.is_visible(5.0, false));
+        assert!(bar.is_visible(9.9, false));
+
+        let mut bar = BarState::default();
+        bar.request(BAR_START_SECS);
+        assert!(bar.is_visible(50.0, false));
+        assert!(bar.is_visible(50.0 + BAR_START_SECS - 0.1, false));
+        assert!(!bar.is_visible(50.0 + BAR_START_SECS, false));
+    }
+}

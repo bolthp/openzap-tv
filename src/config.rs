@@ -7,7 +7,89 @@ use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::player::{HardwareDecoding, PlaybackSettings};
+use crate::player::{AspectMode, HardwareDecoding, PlaybackSettings};
+
+/// Which side of the window the channel list is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Side {
+    #[default]
+    Left,
+    Right,
+}
+
+/// Colour theme of the interface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Theme {
+    /// Follow the operating system.
+    #[default]
+    System,
+    Dark,
+    Light,
+}
+
+impl Theme {
+    pub const ALL: [Theme; 3] = [Theme::System, Theme::Dark, Theme::Light];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Theme::System => "System",
+            Theme::Dark => "Dark",
+            Theme::Light => "Light",
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Theme::System => "system",
+            Theme::Dark => "dark",
+            Theme::Light => "light",
+        }
+    }
+}
+
+/// Window layout and picture preferences.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ViewSettings {
+    pub list_side: Side,
+    pub list_visible: bool,
+    pub always_on_top: bool,
+    pub aspect: AspectMode,
+    pub theme: Theme,
+}
+
+impl Default for ViewSettings {
+    fn default() -> Self {
+        ViewSettings {
+            list_side: Side::Left,
+            list_visible: true,
+            always_on_top: false,
+            aspect: AspectMode::Auto,
+            theme: Theme::System,
+        }
+    }
+}
+
+fn aspect_key(mode: AspectMode) -> &'static str {
+    match mode {
+        AspectMode::Auto => "auto",
+        AspectMode::Ratio16x9 => "16:9",
+        AspectMode::Ratio4x3 => "4:3",
+        AspectMode::Fill => "fill",
+        AspectMode::Stretch => "stretch",
+    }
+}
+
+fn yes_no(v: bool) -> &'static str {
+    if v { "yes" } else { "no" }
+}
+
+fn parse_bool(v: &str) -> Option<bool> {
+    match v {
+        "yes" | "true" | "1" => Some(true),
+        "no" | "false" | "0" => Some(false),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
@@ -25,6 +107,7 @@ pub struct Config {
     /// Start playing `last_channel` when the app starts.
     pub resume_last: bool,
     pub playback: PlaybackSettings,
+    pub view: ViewSettings,
 }
 
 impl Default for Config {
@@ -37,6 +120,7 @@ impl Default for Config {
             last_channel: None,
             resume_last: false,
             playback: PlaybackSettings::default(),
+            view: ViewSettings::default(),
         }
     }
 }
@@ -78,6 +162,31 @@ impl Config {
                         );
                     }
                 }
+                "list_side" => match value {
+                    "left" => cfg.view.list_side = Side::Left,
+                    "right" => cfg.view.list_side = Side::Right,
+                    _ => {}
+                },
+                "list_visible" => {
+                    if let Some(v) = parse_bool(value) {
+                        cfg.view.list_visible = v;
+                    }
+                }
+                "always_on_top" => {
+                    if let Some(v) = parse_bool(value) {
+                        cfg.view.always_on_top = v;
+                    }
+                }
+                "aspect" => {
+                    if let Some(&mode) = AspectMode::ALL.iter().find(|&&m| aspect_key(m) == value) {
+                        cfg.view.aspect = mode;
+                    }
+                }
+                "theme" => {
+                    if let Some(&t) = Theme::ALL.iter().find(|t| t.key() == value) {
+                        cfg.view.theme = t;
+                    }
+                }
                 "volume" => {
                     if let Ok(v) = value.parse::<f64>()
                         && v.is_finite()
@@ -102,16 +211,28 @@ impl Config {
             out.push_str(&format!("epg={}\n", one_line(e)));
         }
         out.push_str(&format!("volume={}\n", self.volume));
-        out.push_str(&format!(
-            "resume_last={}\n",
-            if self.resume_last { "yes" } else { "no" }
-        ));
+        out.push_str(&format!("resume_last={}\n", yes_no(self.resume_last)));
         let hwdec = match self.playback.hwdec {
             HardwareDecoding::Off => "off",
             HardwareDecoding::Auto => "auto",
         };
         out.push_str(&format!("hwdec={hwdec}\n"));
         out.push_str(&format!("buffer_secs={}\n", self.playback.buffer_secs));
+        let side = match self.view.list_side {
+            Side::Left => "left",
+            Side::Right => "right",
+        };
+        out.push_str(&format!("list_side={side}\n"));
+        out.push_str(&format!(
+            "list_visible={}\n",
+            yes_no(self.view.list_visible)
+        ));
+        out.push_str(&format!(
+            "always_on_top={}\n",
+            yes_no(self.view.always_on_top)
+        ));
+        out.push_str(&format!("aspect={}\n", aspect_key(self.view.aspect)));
+        out.push_str(&format!("theme={}\n", self.view.theme.key()));
         if let Some(c) = &self.last_channel {
             out.push_str(&format!("last_channel={}\n", one_line(c)));
         }
@@ -215,6 +336,13 @@ mod tests {
                 hwdec: HardwareDecoding::Auto,
                 buffer_secs: 25,
             },
+            view: ViewSettings {
+                list_side: Side::Right,
+                list_visible: false,
+                always_on_top: true,
+                aspect: AspectMode::Fill,
+                theme: Theme::Dark,
+            },
         };
         assert_eq!(Config::parse(&cfg.serialize()), cfg);
     }
@@ -237,6 +365,27 @@ mod tests {
         let cfg = Config::parse("hwdec=bogus\nbuffer_secs=lots\n");
         assert_eq!(cfg.playback, PlaybackSettings::default());
         assert_eq!(PlaybackSettings::default().hwdec, HardwareDecoding::Auto);
+    }
+
+    #[test]
+    fn view_settings_parse_leniently() {
+        assert_eq!(Config::parse("").view, ViewSettings::default());
+        for mode in AspectMode::ALL {
+            let cfg = Config {
+                view: ViewSettings {
+                    aspect: mode,
+                    ..ViewSettings::default()
+                },
+                ..Config::default()
+            };
+            assert_eq!(Config::parse(&cfg.serialize()).view.aspect, mode);
+        }
+        for theme in Theme::ALL {
+            let text = format!("theme={}\n", theme.key());
+            assert_eq!(Config::parse(&text).view.theme, theme);
+        }
+        let cfg = Config::parse("list_side=top\nlist_visible=maybe\naspect=21:9\ntheme=pink\n");
+        assert_eq!(cfg.view, ViewSettings::default());
     }
 
     #[test]

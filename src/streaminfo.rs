@@ -132,7 +132,7 @@ impl StreamInfo {
 }
 
 /// Display name for an FFmpeg codec name.
-fn codec_label(name: &str) -> String {
+pub(crate) fn codec_label(name: &str) -> String {
     match name {
         "h264" => "H.264".into(),
         "hevc" => "HEVC".into(),
@@ -156,7 +156,7 @@ fn dynamic_label(d: Dynamic, wide_gamut: bool) -> &'static str {
     }
 }
 
-fn channels_label(n: u32) -> String {
+pub(crate) fn channels_label(n: u32) -> String {
     match n {
         1 => "mono".into(),
         2 => "stereo".into(),

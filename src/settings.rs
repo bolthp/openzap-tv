@@ -1,7 +1,7 @@
 //! The settings dialog. It edits a draft; nothing changes until Save.
 
 use eframe::egui;
-use openzap::config::Config;
+use openzap::config::{Config, Theme};
 use openzap::player::{HardwareDecoding, PlaybackSettings};
 
 /// Everything the dialog can change, copied from the current state.
@@ -11,6 +11,7 @@ pub struct SettingsDraft {
     pub epg: String,
     pub resume_last: bool,
     pub playback: PlaybackSettings,
+    pub theme: Theme,
 }
 
 impl SettingsDraft {
@@ -22,6 +23,7 @@ impl SettingsDraft {
             epg: epg.to_string(),
             resume_last: config.resume_last,
             playback: config.playback,
+            theme: config.view.theme,
         }
     }
 }
@@ -88,6 +90,22 @@ pub fn show(ctx: &egui::Context, draft: &mut SettingsDraft) -> Option<Outcome> {
         ui.small(
             "A larger buffer helps with unstable connections; switching channels may take longer.",
         );
+
+        section(ui, "Interface");
+        egui::Grid::new("settings-interface")
+            .num_columns(2)
+            .spacing([12.0, 8.0])
+            .show(ui, |ui| {
+                ui.label("Theme");
+                egui::ComboBox::from_id_salt("theme")
+                    .selected_text(draft.theme.label())
+                    .show_ui(ui, |ui| {
+                        for theme in Theme::ALL {
+                            ui.selectable_value(&mut draft.theme, theme, theme.label());
+                        }
+                    });
+                ui.end_row();
+            });
 
         section(ui, "Startup");
         ui.checkbox(&mut draft.resume_last, "Resume the last channel on start");
