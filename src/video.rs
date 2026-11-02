@@ -128,7 +128,7 @@ impl State {
                 gl.bind_vertex_array(None);
                 gl.bind_buffer(glow::ARRAY_BUFFER, None);
                 gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, None);
-                match render.render(target.fbo.0.get(), width, height) {
+                match render.render(target.fbo.0.get(), width, height, glow::RGBA8 as i32) {
                     Ok(()) => self.needs_render = false,
                     Err(e) => self.error = Some(e.to_string()),
                 }

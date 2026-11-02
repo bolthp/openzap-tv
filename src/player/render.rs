@@ -113,16 +113,23 @@ impl RenderContext {
     }
 
     /// Draws the current frame into the framebuffer object `fbo` (whose size
-    /// is `width` x `height` pixels), oriented for OpenGL's bottom-left origin.
+    /// is `width` x `height` pixels, color format `internal_format`, e.g.
+    /// `GL_RGBA8`; 0 if unknown), oriented for OpenGL's bottom-left origin.
     ///
     /// The GL context must be current.
-    pub fn render(&self, fbo: u32, width: i32, height: i32) -> Result<(), PlayerError> {
+    pub fn render(
+        &self,
+        fbo: u32,
+        width: i32,
+        height: i32,
+        internal_format: i32,
+    ) -> Result<(), PlayerError> {
         let api = self.inner.api;
         let mut target = sys::OpenGlFbo {
             fbo: fbo as c_int,
             w: width,
             h: height,
-            internal_format: 0, // unknown
+            internal_format,
         };
         let mut flip_y: c_int = 1;
         let mut params = [

@@ -65,6 +65,23 @@ pub enum PlayerEvent {
     /// mpv is shutting down. The instance is unusable from now on: drop this
     /// `Player` and create a new one.
     Shutdown,
+    /// An observed property changed (see [`Player::observe`]).
+    Property { name: String, value: PropertyValue },
+}
+
+/// Value type to observe a property as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PropertyKind {
+    Flag,
+    Int,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PropertyValue {
+    Flag(bool),
+    Int(i64),
+    /// The property is currently unavailable (e.g. nothing is playing).
+    Unavailable,
 }
 
 /// The mpv instance itself. Shared (`Arc`) between the [`Player`] and any
@@ -184,6 +201,25 @@ impl Player {
         self.command(&["stop"])
     }
 
+    pub fn set_mute(&self, mute: bool) -> Result<(), PlayerError> {
+        self.set_property("mute", if mute { "yes" } else { "no" })
+    }
+
+    /// Asks mpv to report changes of `name` as [`PlayerEvent::Property`].
+    /// The current value is reported right away.
+    pub fn observe(&self, name: &str, kind: PropertyKind) -> Result<(), PlayerError> {
+        let name = cstring(name)?;
+        let format = match kind {
+            PropertyKind::Flag => sys::FORMAT_FLAG,
+            PropertyKind::Int => sys::FORMAT_INT64,
+        };
+        let api = self.inner.api;
+        // SAFETY: valid handle; `name` is NUL-terminated (mpv copies it).
+        check(api, unsafe {
+            (api.mpv_observe_property)(self.inner.raw(), 0, name.as_ptr(), format)
+        })
+    }
+
     /// Volume in percent (0–130).
     pub fn set_volume(&self, percent: f64) -> Result<(), PlayerError> {
         self.set_property("volume", &percent.clamp(0.0, 130.0).to_string())
@@ -207,6 +243,25 @@ impl Player {
                 sys::EVENT_SHUTDOWN => return Some(PlayerEvent::Shutdown),
                 sys::EVENT_START_FILE => return Some(PlayerEvent::Loading),
                 sys::EVENT_FILE_LOADED => return Some(PlayerEvent::Started),
+                sys::EVENT_PROPERTY_CHANGE if !event.data.is_null() => {
+                    // SAFETY: for PROPERTY_CHANGE events `data` points to an
+                    // mpv_event_property whose `name` is NUL-terminated and
+                    // whose `data` matches `format`.
+                    let prop = unsafe { &*(event.data as *const sys::EventProperty) };
+                    let name = unsafe { CStr::from_ptr(prop.name) }
+                        .to_string_lossy()
+                        .into_owned();
+                    let value = match prop.format {
+                        sys::FORMAT_FLAG if !prop.data.is_null() => {
+                            PropertyValue::Flag(unsafe { *(prop.data as *const c_int) } != 0)
+                        }
+                        sys::FORMAT_INT64 if !prop.data.is_null() => {
+                            PropertyValue::Int(unsafe { *(prop.data as *const i64) })
+                        }
+                        _ => PropertyValue::Unavailable,
+                    };
+                    return Some(PlayerEvent::Property { name, value });
+                }
                 sys::EVENT_END_FILE if !event.data.is_null() => {
                     // SAFETY: for END_FILE events `data` points to an mpv_event_end_file.
                     let end = unsafe { &*(event.data as *const sys::EndFile) };
@@ -361,6 +416,50 @@ mod tests {
             }
         }
         assert!(got, "expected a Shutdown event");
+    }
+
+    /// Waits for the next Property event about `name`.
+    fn next_property(p: &Player, name: &str) -> Option<PropertyValue> {
+        for _ in 0..50 {
+            if let Some(PlayerEvent::Property { name: n, value }) = p.wait(0.1)
+                && n == name
+            {
+                return Some(value);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn observed_flag_reports_initial_value_and_changes() {
+        require_mpv!();
+        let p = headless();
+        p.observe("mute", PropertyKind::Flag).unwrap();
+        assert_eq!(next_property(&p, "mute"), Some(PropertyValue::Flag(false)));
+        p.set_mute(true).unwrap();
+        assert_eq!(next_property(&p, "mute"), Some(PropertyValue::Flag(true)));
+    }
+
+    #[test]
+    fn observed_int_property() {
+        require_mpv!();
+        let p = headless();
+        p.set_volume(42.0).unwrap();
+        p.observe("volume", PropertyKind::Int).unwrap();
+        assert_eq!(next_property(&p, "volume"), Some(PropertyValue::Int(42)));
+    }
+
+    #[test]
+    fn unknown_property_is_rejected_or_unavailable() {
+        require_mpv!();
+        let p = headless();
+        // Either outcome is safe for callers; a bogus value would not be.
+        if p.observe("no-such-property", PropertyKind::Flag).is_ok() {
+            assert_eq!(
+                next_property(&p, "no-such-property"),
+                Some(PropertyValue::Unavailable)
+            );
+        }
     }
 
     #[test]

@@ -12,9 +12,36 @@ use openzap::guide::GuideIndex;
 use openzap::loader::{self, Loaded};
 use openzap::m3u::{Channel, Playlist};
 use openzap::mask::mask_url;
-use openzap::player::{Player, PlayerEvent};
+use openzap::player::{Player, PlayerEvent, PropertyKind, PropertyValue};
 
 use crate::video::VideoView;
+
+/// What the current stream is doing, as shown on top of the video.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StreamState {
+    Idle,
+    Opening,
+    Playing,
+    /// Waiting for the network; the percentage is how full the cache is.
+    Buffering(Option<i64>),
+    Failed(String),
+}
+
+/// Text to show over the video for a stream state, if any.
+fn overlay_text(state: &StreamState) -> Option<String> {
+    match state {
+        StreamState::Idle | StreamState::Playing => None,
+        StreamState::Opening => Some("Loading...".into()),
+        StreamState::Buffering(Some(p)) => Some(format!("Buffering... {p}%")),
+        StreamState::Buffering(None) => Some("Buffering...".into()),
+        StreamState::Failed(msg) => Some(format!("Cannot play: {msg}")),
+    }
+}
+
+/// Volume step for the mouse wheel, in percent.
+const VOLUME_STEP: f64 = 5.0;
+/// How long short on-screen messages (volume, mute) stay visible, seconds.
+const OSD_SECS: f64 = 1.5;
 
 /// A background load in progress, with the inputs it was started for.
 struct PendingLoad {
@@ -50,6 +77,11 @@ pub struct App {
     pending_volume: bool,
     pending_save: bool,
     pending_favorite: Option<usize>,
+    stream: StreamState,
+    muted: bool,
+    pending_mute: bool,
+    /// Short on-screen message and the input time (seconds) it expires at.
+    osd: Option<(String, f64)>,
     favorites_only: bool,
     /// EPG matching and now/next lookup; rebuilt whenever playlist or EPG change.
     guide: GuideIndex,
@@ -125,6 +157,10 @@ impl App {
             pending_volume: false,
             pending_save: false,
             pending_favorite: None,
+            stream: StreamState::Idle,
+            muted: false,
+            pending_mute: false,
+            osd: None,
             favorites_only: false,
             guide,
             config: Config::default(),
@@ -289,6 +325,15 @@ impl App {
             self.status = format!("Video output unavailable: {e}");
             return false;
         }
+        // Buffering state for the overlay; without it playback still works.
+        for (name, kind) in [
+            ("paused-for-cache", PropertyKind::Flag),
+            ("cache-buffering-state", PropertyKind::Int),
+        ] {
+            if let Err(e) = player.observe(name, kind) {
+                self.notices.push(format!("Cannot watch {name}: {e}"));
+            }
+        }
         self.player = Some(player);
         true
     }
@@ -327,11 +372,48 @@ impl App {
             return;
         }
         self.playing = None;
+        self.stream = StreamState::Idle;
         self.status = "Stopped".into();
     }
 
+    /// Plays the next (`delta` = 1) or previous (-1) channel of the visible
+    /// list, wrapping around. Starts from the playing or selected channel.
+    fn switch_channel(&mut self, delta: isize) {
+        if self.visible.is_empty() {
+            return;
+        }
+        let current = self.playing.or(self.selected);
+        let pos = current.and_then(|c| self.visible.iter().position(|&i| i == c));
+        let next = match pos {
+            Some(p) => (p as isize + delta).rem_euclid(self.visible.len() as isize) as usize,
+            None => 0,
+        };
+        let idx = self.visible[next];
+        self.selected = Some(idx);
+        self.pending_play = Some(idx);
+    }
+
+    fn toggle_mute(&mut self, now: f64) {
+        self.muted = !self.muted;
+        self.apply_volume();
+        let text = if self.muted { "Muted" } else { "Sound on" };
+        self.osd = Some((text.into(), now + OSD_SECS));
+    }
+
+    fn change_volume(&mut self, delta: f64, now: f64) {
+        self.volume = (self.volume + delta).clamp(0.0, 100.0);
+        self.pending_volume = true;
+        self.pending_save = true;
+        self.osd = Some((format!("Volume {:.0}%", self.volume), now + OSD_SECS));
+    }
+
+    /// Sends volume and mute state to mpv.
     fn apply_volume(&mut self) {
-        if let Some(Err(e)) = self.player.as_ref().map(|p| p.set_volume(self.volume)) {
+        let result = self.player.as_ref().map(|p| {
+            p.set_volume(self.volume)
+                .and_then(|()| p.set_mute(self.muted))
+        });
+        if let Some(Err(e)) = result {
             self.status = format!("Cannot set volume: {e}");
         }
     }
@@ -350,20 +432,53 @@ impl App {
 
     fn apply_event(&mut self, ev: PlayerEvent) {
         match ev {
-            PlayerEvent::Loading => self.status = "Loading...".into(),
-            PlayerEvent::Started => self.status = "Playing".into(),
+            PlayerEvent::Loading => {
+                self.stream = StreamState::Opening;
+                self.status = "Loading...".into();
+            }
+            PlayerEvent::Started => {
+                self.stream = StreamState::Playing;
+                self.status = "Playing".into();
+            }
+            PlayerEvent::Property { name, value } => self.apply_property(&name, value),
             // Also fired when a new channel replaces the old one, so `playing`
             // is left alone; it is cleared by `stop` and by failures.
-            PlayerEvent::Ended => self.status = "Stopped".into(),
+            PlayerEvent::Ended => {
+                self.stream = StreamState::Idle;
+                self.status = "Stopped".into();
+            }
             PlayerEvent::Shutdown => {
                 // The next Play creates a fresh instance.
                 self.release_player();
+                self.stream = StreamState::Idle;
                 self.status = "Player closed. Press Play to start again.".into();
             }
             PlayerEvent::Failed(msg) => {
+                self.stream = StreamState::Failed(msg.clone());
                 self.playing = None;
                 self.status = format!("Playback failed: {msg}");
             }
+        }
+    }
+
+    fn apply_property(&mut self, name: &str, value: PropertyValue) {
+        match (name, value) {
+            ("paused-for-cache", PropertyValue::Flag(true)) => {
+                if matches!(self.stream, StreamState::Playing | StreamState::Opening) {
+                    self.stream = StreamState::Buffering(None);
+                }
+            }
+            ("paused-for-cache", PropertyValue::Flag(false)) => {
+                if matches!(self.stream, StreamState::Buffering(_)) {
+                    self.stream = StreamState::Playing;
+                }
+            }
+            ("cache-buffering-state", PropertyValue::Int(p)) => {
+                if let StreamState::Buffering(percent) = &mut self.stream {
+                    *percent = Some(p.clamp(0, 100));
+                }
+            }
+            _ => {}
         }
     }
 
@@ -441,31 +556,105 @@ impl App {
         });
     }
 
-    /// 16:9 video area at the top of the details panel.
-    fn video_area(&mut self, ui: &mut egui::Ui) {
-        let width = ui.available_width();
-        let height = (width * 9.0 / 16.0).min(ui.available_height() * 0.6);
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
-        ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
-        if self.playing.is_some() && self.video.is_attached() {
-            self.video.paint(ui, rect);
+    /// The video with its overlays. `fill` uses all available space
+    /// (fullscreen); otherwise a 16:9 area at the top of the details panel.
+    fn video_area(&mut self, ui: &mut egui::Ui, fill: bool) {
+        let size = if fill {
+            ui.available_size()
         } else {
-            ui.painter().text(
+            let width = ui.available_width();
+            egui::vec2(width, (width * 9.0 / 16.0).min(ui.available_height() * 0.6))
+        };
+        let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+        let painter = ui.painter_at(rect);
+        ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
+
+        let showing_video = self.playing.is_some() && self.video.is_attached();
+        if showing_video {
+            self.video.paint(ui, rect);
+        }
+        let message = overlay_text(&self.stream)
+            .or_else(|| (!showing_video).then(|| "Nothing playing".to_string()));
+        if let Some(text) = message {
+            draw_label(
+                &painter,
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
-                "Nothing playing",
-                egui::TextStyle::Body.resolve(ui.style()),
-                egui::Color32::GRAY,
+                &text,
+                ui,
             );
+        }
+        let time = ui.input(|i| i.time);
+        if let Some((text, until)) = &self.osd {
+            if time < *until {
+                let corner = rect.right_top() + egui::vec2(-16.0, 16.0);
+                draw_label(&painter, corner, egui::Align2::RIGHT_TOP, text, ui);
+                ui.ctx()
+                    .request_repaint_after(Duration::from_secs_f64(until - time));
+            } else {
+                self.osd = None;
+            }
+        }
+
+        if response.double_clicked() {
+            toggle_fullscreen(ui.ctx());
+        }
+        if response.hovered() {
+            let scroll: f32 = ui.input(|i| {
+                i.events
+                    .iter()
+                    .filter_map(|e| match e {
+                        egui::Event::MouseWheel { delta, .. } => Some(delta.y),
+                        _ => None,
+                    })
+                    .sum()
+            });
+            if scroll != 0.0 {
+                self.change_volume(VOLUME_STEP * f64::from(scroll.signum()), time);
+            }
         }
         if let Some(e) = self.video.take_error() {
             self.status = format!("Video error: {e}");
         }
-        ui.add_space(6.0);
+        if !fill {
+            ui.add_space(6.0);
+        }
+    }
+
+    /// Global keyboard shortcuts (ignored while typing in a text field).
+    fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        if ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        let (fullscreen_key, escape, mute, prev, next, time) = ctx.input(|i| {
+            (
+                i.key_pressed(egui::Key::F),
+                i.key_pressed(egui::Key::Escape),
+                i.key_pressed(egui::Key::M),
+                i.key_pressed(egui::Key::PageUp),
+                i.key_pressed(egui::Key::PageDown),
+                i.time,
+            )
+        });
+        if fullscreen_key {
+            toggle_fullscreen(ctx);
+        }
+        if escape && is_fullscreen(ctx) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+        }
+        if mute {
+            self.toggle_mute(time);
+        }
+        if prev {
+            self.switch_channel(-1);
+        }
+        if next {
+            self.switch_channel(1);
+        }
     }
 
     fn details(&mut self, ui: &mut egui::Ui, now: i64) {
-        self.video_area(ui);
+        self.video_area(ui, false);
         for notice in &self.notices {
             ui.colored_label(egui::Color32::LIGHT_RED, notice);
         }
@@ -490,6 +679,12 @@ impl App {
             }
             if ui.button("Stop").clicked() {
                 self.pending_stop = true;
+            }
+            if ui
+                .button(if self.muted { "Unmute" } else { "Mute" })
+                .clicked()
+            {
+                self.pending_mute = true;
             }
             let label = if self.config.favorites.contains(channel.key()) {
                 "Remove from favorites"
@@ -558,11 +753,18 @@ impl eframe::App for App {
         }
         self.poll_loading();
         self.poll_player();
-        egui::Panel::top("sources").show(ui, |ui| self.source_bar(ui));
-        egui::Panel::left("channels")
-            .default_size(320.0)
-            .show(ui, |ui| self.channel_list(ui, now));
-        egui::CentralPanel::default().show(ui, |ui| self.details(ui, now));
+        self.handle_shortcuts(ui.ctx());
+        if is_fullscreen(ui.ctx()) {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
+                .show(ui, |ui| self.video_area(ui, true));
+        } else {
+            egui::Panel::top("sources").show(ui, |ui| self.source_bar(ui));
+            egui::Panel::left("channels")
+                .default_size(320.0)
+                .show(ui, |ui| self.channel_list(ui, now));
+            egui::CentralPanel::default().show(ui, |ui| self.details(ui, now));
+        }
         if let Some(idx) = self.pending_play.take() {
             self.play(idx);
         }
@@ -571,6 +773,10 @@ impl eframe::App for App {
         }
         if std::mem::take(&mut self.pending_stop) {
             self.stop();
+        }
+        if std::mem::take(&mut self.pending_mute) {
+            let time = ui.input(|i| i.time);
+            self.toggle_mute(time);
         }
         if std::mem::take(&mut self.pending_volume) {
             self.apply_volume();
@@ -590,6 +796,29 @@ fn unix_now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64)
+}
+
+fn is_fullscreen(ctx: &egui::Context) -> bool {
+    ctx.input(|i| i.viewport().fullscreen.unwrap_or(false))
+}
+
+fn toggle_fullscreen(ctx: &egui::Context) {
+    ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!is_fullscreen(ctx)));
+}
+
+/// Text on a dark rounded background, anchored at `pos`.
+fn draw_label(
+    painter: &egui::Painter,
+    pos: egui::Pos2,
+    anchor: egui::Align2,
+    text: &str,
+    ui: &egui::Ui,
+) {
+    let font = egui::TextStyle::Heading.resolve(ui.style());
+    let galley = painter.layout_no_wrap(text.to_owned(), font, egui::Color32::WHITE);
+    let rect = anchor.anchor_size(pos, galley.size());
+    painter.rect_filled(rect.expand(10.0), 6.0, egui::Color32::from_black_alpha(170));
+    painter.galley(rect.min, galley, egui::Color32::WHITE);
 }
 
 /// Single-line text field; returns true when Enter was pressed in it.
@@ -818,5 +1047,110 @@ mod tests {
         app.apply_loaded(loaded(Ok(playlist), Some(Ok(epg))), "p", "e");
         assert_eq!(app.selected, Some(2));
         assert!(app.guide.epg_id(2).is_some());
+    }
+
+    #[test]
+    fn overlay_texts() {
+        assert_eq!(overlay_text(&StreamState::Idle), None);
+        assert_eq!(overlay_text(&StreamState::Playing), None);
+        assert_eq!(
+            overlay_text(&StreamState::Opening).as_deref(),
+            Some("Loading...")
+        );
+        assert_eq!(
+            overlay_text(&StreamState::Buffering(Some(40))).as_deref(),
+            Some("Buffering... 40%")
+        );
+        assert_eq!(
+            overlay_text(&StreamState::Failed("loading failed".into())).as_deref(),
+            Some("Cannot play: loading failed")
+        );
+    }
+
+    fn prop(name: &str, value: PropertyValue) -> PlayerEvent {
+        PlayerEvent::Property {
+            name: name.into(),
+            value,
+        }
+    }
+
+    #[test]
+    fn stream_state_follows_player_events() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+
+        app.apply_event(PlayerEvent::Loading);
+        assert_eq!(app.stream, StreamState::Opening);
+        app.apply_event(PlayerEvent::Started);
+        assert_eq!(app.stream, StreamState::Playing);
+
+        app.apply_event(prop("paused-for-cache", PropertyValue::Flag(true)));
+        assert_eq!(app.stream, StreamState::Buffering(None));
+        app.apply_event(prop("cache-buffering-state", PropertyValue::Int(40)));
+        assert_eq!(app.stream, StreamState::Buffering(Some(40)));
+        app.apply_event(prop("paused-for-cache", PropertyValue::Flag(false)));
+        assert_eq!(app.stream, StreamState::Playing);
+
+        app.apply_event(PlayerEvent::Failed("loading failed".into()));
+        assert_eq!(app.stream, StreamState::Failed("loading failed".into()));
+    }
+
+    #[test]
+    fn buffering_is_ignored_when_nothing_plays() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+        app.apply_event(prop("paused-for-cache", PropertyValue::Flag(true)));
+        app.apply_event(prop("cache-buffering-state", PropertyValue::Int(10)));
+        assert_eq!(app.stream, StreamState::Idle);
+    }
+
+    #[test]
+    fn switch_channel_wraps_within_visible_list() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+
+        app.switch_channel(1); // nothing selected: start at the first
+        assert_eq!(app.pending_play, Some(0));
+
+        app.playing = Some(2);
+        app.switch_channel(1); // last -> first
+        assert_eq!((app.selected, app.pending_play), (Some(0), Some(0)));
+
+        app.playing = Some(0);
+        app.switch_channel(-1); // first -> last
+        assert_eq!(app.pending_play, Some(2));
+    }
+
+    #[test]
+    fn switch_channel_respects_filter() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+        app.query = "film".into();
+        app.refilter(); // only index 1 visible
+        app.playing = Some(1);
+        app.switch_channel(1);
+        assert_eq!(app.pending_play, Some(1));
+
+        app.visible.clear();
+        app.pending_play = None;
+        app.switch_channel(1);
+        assert_eq!(app.pending_play, None);
+    }
+
+    #[test]
+    fn mute_and_volume_update_state_and_osd() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+
+        app.toggle_mute(10.0);
+        assert!(app.muted);
+        assert_eq!(app.osd, Some(("Muted".into(), 10.0 + OSD_SECS)));
+
+        app.volume = 98.0;
+        app.change_volume(VOLUME_STEP, 20.0);
+        assert_eq!(app.volume, 100.0);
+        assert!(app.pending_volume && app.pending_save);
+        app.change_volume(-200.0, 20.0);
+        assert_eq!(app.volume, 0.0);
     }
 }

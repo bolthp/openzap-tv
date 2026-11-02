@@ -76,6 +76,18 @@ pub(super) mod sys {
     pub const RENDER_PARAM_FLIP_Y: c_int = 4;
     pub const RENDER_UPDATE_FRAME: u64 = 1;
 
+    /// `mpv_event_property`.
+    #[repr(C)]
+    pub struct EventProperty {
+        pub name: *const c_char,
+        pub format: c_int,
+        pub data: *mut c_void,
+    }
+
+    pub const FORMAT_FLAG: c_int = 3;
+    pub const FORMAT_INT64: c_int = 4;
+    pub const EVENT_PROPERTY_CHANGE: c_int = 22;
+
     pub const EVENT_NONE: c_int = 0;
     pub const EVENT_SHUTDOWN: c_int = 1;
     pub const EVENT_START_FILE: c_int = 6;
@@ -126,6 +138,7 @@ mpv_api! {
     fn mpv_set_property_string(*mut sys::Handle, *const c_char, *const c_char) -> c_int;
     fn mpv_command(*mut sys::Handle, *mut *const c_char) -> c_int;
     fn mpv_wait_event(*mut sys::Handle, f64) -> *mut sys::Event;
+    fn mpv_observe_property(*mut sys::Handle, u64, *const c_char, c_int) -> c_int;
     fn mpv_error_string(c_int) -> *const c_char;
     fn mpv_render_context_create(*mut *mut sys::RenderRaw, *mut sys::Handle, *mut sys::RenderParam) -> c_int;
     fn mpv_render_context_set_update_callback(
