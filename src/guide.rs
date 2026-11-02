@@ -27,6 +27,8 @@ const LOOKBACK: usize = 16;
 pub struct GuideIndex {
     /// For each playlist channel (same order): id of its EPG channel.
     epg_ids: Vec<Option<String>>,
+    /// For each playlist channel: logo URL (`tvg-logo`, else the EPG icon).
+    logos: Vec<Option<String>>,
     /// EPG channel id -> indices into `epg.programmes`, sorted by start.
     by_channel: HashMap<String, Vec<usize>>,
 }
@@ -45,10 +47,28 @@ impl GuideIndex {
             by_name.entry(norm(&c.display_name)).or_insert(&c.id);
         }
 
-        let epg_ids = playlist
+        let epg_ids: Vec<Option<String>> = playlist
             .channels
             .iter()
             .map(|ch| match_channel(ch, &by_id, &by_name).map(String::from))
+            .collect();
+        let icons: HashMap<&str, &str> = epg
+            .channels
+            .iter()
+            .filter_map(|c| Some((c.id.as_str(), c.icon.as_deref()?)))
+            .collect();
+        let logos = playlist
+            .channels
+            .iter()
+            .zip(&epg_ids)
+            .map(|(ch, id)| {
+                let from_epg = || icons.get(id.as_deref()?).copied();
+                ch.tvg_logo
+                    .as_deref()
+                    .filter(|l| !l.trim().is_empty())
+                    .or_else(from_epg)
+                    .map(String::from)
+            })
             .collect();
 
         let mut by_channel: HashMap<String, Vec<usize>> = HashMap::new();
@@ -60,6 +80,7 @@ impl GuideIndex {
         }
         GuideIndex {
             epg_ids,
+            logos,
             by_channel,
         }
     }
@@ -67,6 +88,11 @@ impl GuideIndex {
     /// EPG channel id matched to the playlist channel at `channel_idx`.
     pub fn epg_id(&self, channel_idx: usize) -> Option<&str> {
         self.epg_ids.get(channel_idx)?.as_deref()
+    }
+
+    /// Logo URL or path of the playlist channel at `channel_idx`.
+    pub fn logo(&self, channel_idx: usize) -> Option<&str> {
+        self.logos.get(channel_idx)?.as_deref()
     }
 
     /// Current and next programme of a playlist channel at Unix time `at`.
@@ -182,6 +208,34 @@ mod tests {
     fn matches_by_tvg_id_case_insensitive() {
         let (idx, _) = single(channel("Whatever", Some("NEWS.Example")), sample_epg());
         assert_eq!(idx.epg_id(0), Some("news.example"));
+    }
+
+    #[test]
+    fn logo_prefers_playlist_then_epg_icon() {
+        let mut epg = sample_epg();
+        epg.channels[0].icon = Some("http://example.com/news.png".into());
+        let with_own = Channel {
+            tvg_logo: Some("http://example.com/own.png".into()),
+            ..channel("A", Some("news.example"))
+        };
+        let blank_own = Channel {
+            tvg_logo: Some("  ".into()),
+            ..channel("B", Some("news.example"))
+        };
+        let playlist = Playlist {
+            channels: vec![
+                with_own,
+                blank_own,
+                channel("Example Film", None), // matched, but no icon
+                channel("Unknown", None),
+            ],
+        };
+        let idx = GuideIndex::build(&playlist, &epg);
+        assert_eq!(idx.logo(0), Some("http://example.com/own.png"));
+        assert_eq!(idx.logo(1), Some("http://example.com/news.png"));
+        assert_eq!(idx.logo(2), None);
+        assert_eq!(idx.logo(3), None);
+        assert_eq!(idx.logo(99), None);
     }
 
     #[test]

@@ -4,9 +4,11 @@ use std::sync::Arc;
 
 use eframe::egui;
 use openzap::browse::progress;
+use openzap::clock;
 
 use openzap::config::Side;
 
+use super::logo::paint_logo;
 use super::{Action, App};
 
 /// Width of the list when it slides in over the video.
@@ -46,6 +48,9 @@ impl ListOverlay {
         (time < self.until).then_some(self.until - time)
     }
 }
+
+/// Width : height of the logo box (logos are mostly landscape).
+const LOGO_ASPECT: f32 = 1.5;
 
 /// Colour of the favorite star.
 const STAR: egui::Color32 = egui::Color32::from_rgb(240, 190, 40);
@@ -282,7 +287,16 @@ impl App {
             };
             painter.rect_filled(stripe, 2.0, accent);
         }
-        let inner = rect.shrink2(egui::vec2(8.0, 5.0));
+        let mut inner = rect.shrink2(egui::vec2(8.0, 5.0));
+        if self.show_logos {
+            let logo = egui::Rect::from_min_size(
+                inner.min,
+                egui::vec2(inner.height() * LOGO_ASPECT, inner.height()),
+            );
+            let texture = self.logo_texture(idx);
+            paint_logo(painter, logo, texture.as_ref(), &channel.name, text);
+            inner.min.x = logo.right() + 8.0;
+        }
 
         let body = egui::TextStyle::Body.resolve(ui.style());
         let small = egui::TextStyle::Small.resolve(ui.style());
@@ -297,8 +311,13 @@ impl App {
         painter.galley(egui::pos2(x, inner.top()), name, text);
 
         if let Some(p) = self.guide.now_next(&self.epg, idx, now).now {
-            let title = elided(painter, &p.title, small, weak, inner.width());
+            // Programme title on the left, its time span on the right.
+            let span = format!("{}–{}", clock::local_hm(p.start), clock::local_hm(p.stop));
+            let span = painter.layout_no_wrap(span, small.clone(), weak);
+            let title_width = inner.width() - span.size().x - 8.0;
+            let title = elided(painter, &p.title, small, weak, title_width);
             let y = inner.bottom() - 4.0 - title.size().y;
+            painter.galley(egui::pos2(inner.right() - span.size().x, y), span, weak);
             painter.galley(egui::pos2(inner.left(), y), title, weak);
             let line_y = inner.bottom();
             let end = inner.left() + inner.width() * progress(p, now);

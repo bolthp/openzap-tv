@@ -10,6 +10,7 @@ eframe = { version = "0.37.0", default-features = false, features = ["accesskit"
 # monochrome icon fonts, so symbols like ⏹ 🔊 ⛶ look the same everywhere.
 egui = { version = "0.37.0", default-features = false, features = ["monochrome_emoji_fonts"] }
 flate2 = "1.1.10"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 libloading = "0.9.0"
 quick-xml = "0.42.0"
 ureq = "3.5.0"

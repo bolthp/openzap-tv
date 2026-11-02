@@ -5,10 +5,12 @@ use std::time::Duration;
 
 use eframe::egui;
 use openzap::browse::{format_duration, progress};
+use openzap::clock;
 use openzap::config::Side;
 use openzap::player::AspectMode;
 use openzap::streaminfo::StreamInfo;
 
+use super::logo::paint_logo;
 use super::{Action, App, StreamState, VOLUME_STEP, draw_label, overlay_text};
 
 /// How long the bar stays after the mouse stops moving, seconds.
@@ -257,15 +259,28 @@ impl App {
             return;
         };
         ui.horizontal(|ui| {
+            if self.show_logos {
+                let (area, _) =
+                    ui.allocate_exact_size(egui::vec2(54.0, 36.0), egui::Sense::hover());
+                let texture = self.logo_texture(idx);
+                paint_logo(
+                    ui.painter(),
+                    area,
+                    texture.as_ref(),
+                    &channel.name,
+                    egui::Color32::WHITE,
+                );
+            }
             ui.label(egui::RichText::new(&channel.name).heading().strong());
             if let Some(group) = &channel.group_title {
                 ui.weak(group);
             }
-            if !matches!(self.stream, StreamState::Playing) && !self.status.is_empty() {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(egui::RichText::new(clock::local_hm(now)).heading());
+                if !matches!(self.stream, StreamState::Playing) && !self.status.is_empty() {
                     ui.weak(&self.status);
-                });
-            }
+                }
+            });
         });
 
         let nn = self.guide.now_next(&self.epg, idx, now);
@@ -274,6 +289,11 @@ impl App {
             return;
         };
         ui.horizontal(|ui| {
+            ui.weak(format!(
+                "{}–{}",
+                clock::local_hm(p.start),
+                clock::local_hm(p.stop)
+            ));
             ui.strong(&p.title);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.weak(format!("ends in {}", format_duration(p.stop - now)));
@@ -305,9 +325,10 @@ impl App {
         }
         if let Some(next) = nn.next {
             ui.weak(format!(
-                "Next in {}: {}",
-                format_duration(next.start - now),
-                next.title
+                "{}  {}  (in {})",
+                clock::local_hm(next.start),
+                next.title,
+                format_duration(next.start - now)
             ));
         }
     }

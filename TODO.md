@@ -35,7 +35,6 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
 
 ## Programme guide
 
-- [ ] Show times in the local time zone (needs a time-zone crate).
 - [ ] Day schedule for a channel, not only now/next.
 - [ ] Match all `display-name` variants of EPG channels (about half of the test
       playlist's channels currently find no EPG).
@@ -46,7 +45,6 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
 - [ ] Design pass: own font (e.g. Inter) and an icon font (e.g. Phosphor via
       `egui-phosphor`) instead of emoji-style symbols, spacing, a custom
       dark/light palette, hover/press animations.
-- [ ] Channel logos (`tvg-logo`) in the list and the bar (download + cache).
 - [ ] Remember the window size/position; per-channel picture size.
 - [ ] Toolkit question (decided: stay on egui for now). Alternatives looked at:
       Slint (declarative, polished widgets, can render under an OpenGL
@@ -65,6 +63,11 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
 - [ ] Proxy support (HTTP/SOCKS) for playlist, EPG and streams — mpv has
       `http-proxy`, ureq supports proxies. Today streams that need it only
       work through a system VPN.
+
+## Logos
+
+- [ ] Limit the logo textures kept in memory (LRU) for very long lists.
+- [ ] A "clear cache" button in Settings.
 
 ## Packaging
 

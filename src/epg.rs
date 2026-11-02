@@ -326,7 +326,8 @@ pub fn parse_time(s: &str) -> Option<i64> {
         None | Some("") => 0,
         Some(o) => parse_offset(o)?,
     };
-    Some(days_from_civil(year, month, day) * 86_400 + hour * 3600 + min * 60 + sec - offset_secs)
+    let days = crate::clock::days_from_civil(year, month as u32, day as u32);
+    Some(days * 86_400 + hour * 3600 + min * 60 + sec - offset_secs)
 }
 
 /// `+0200` / `-0530` -> seconds east of UTC.
@@ -343,16 +344,6 @@ fn parse_offset(o: &str) -> Option<i64> {
     let hours: i64 = digits[..2].parse().ok()?;
     let mins: i64 = digits[2..].parse().ok()?;
     Some(sign * (hours * 3600 + mins * 60))
-}
-
-/// Days since 1970-01-01 for a proleptic Gregorian date (Hinnant's algorithm).
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let doy = (153 * ((m + 9) % 12) + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
 }
 
 #[cfg(test)]

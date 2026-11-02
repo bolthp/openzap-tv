@@ -2,6 +2,7 @@
 //! controls in a bar that slides up over the video.
 
 mod list;
+mod logo;
 mod view;
 
 use std::path::PathBuf;
@@ -23,6 +24,7 @@ use openzap::tracks::{self, AudioTrack};
 use crate::settings::{self, Outcome, SettingsDraft};
 use crate::video::VideoView;
 use list::ListOverlay;
+use logo::Logos;
 use view::{BAR_START_SECS, BarState};
 
 /// What the current stream is doing, as shown on top of the video.
@@ -178,6 +180,10 @@ pub struct App {
     fullscreen: bool,
     /// The channel list over the video when it is not docked.
     list_overlay: ListOverlay,
+    /// Channel logos; created once the window's context is known.
+    logos: Option<Logos>,
+    /// Some channel has a logo, so rows reserve room for one.
+    show_logos: bool,
     /// The window level last sent (true = always on top).
     on_top_applied: Option<bool>,
     /// Short on-screen message and the input time (seconds) it expires at.
@@ -244,6 +250,7 @@ impl App {
         let groups = groups(&playlist);
         let visible = filter_channels(&playlist, &Filter::default());
         let guide = GuideIndex::build(&playlist, &epg);
+        let show_logos = has_logos(&guide, playlist.channels.len());
         Self {
             playlist,
             epg,
@@ -269,6 +276,8 @@ impl App {
             scroll_to: None,
             view_pending: true,
             on_top_applied: None,
+            logos: None,
+            show_logos,
             fullscreen: false,
             list_overlay: ListOverlay::default(),
             osd: None,
@@ -369,6 +378,13 @@ impl App {
 
     fn rebuild_guide(&mut self) {
         self.guide = GuideIndex::build(&self.playlist, &self.epg);
+        self.show_logos = has_logos(&self.guide, self.playlist.channels.len());
+    }
+
+    /// Texture of the channel's logo, if it has one and it is loaded.
+    fn logo_texture(&self, idx: usize) -> Option<egui::TextureHandle> {
+        let url = self.guide.logo(idx)?;
+        self.logos.as_ref()?.texture(&self.ctx, url)
     }
 
     fn set_playlist(&mut self, playlist: Playlist) {
@@ -434,6 +450,7 @@ impl App {
     }
 
     pub fn set_context(&mut self, ctx: egui::Context) {
+        self.logos = Some(Logos::new(&ctx));
         self.ctx = ctx;
     }
 
@@ -942,6 +959,10 @@ fn unix_now() -> i64 {
 
 fn is_fullscreen(ctx: &egui::Context) -> bool {
     ctx.input(|i| i.viewport().fullscreen.unwrap_or(false))
+}
+
+fn has_logos(guide: &GuideIndex, channels: usize) -> bool {
+    (0..channels).any(|i| guide.logo(i).is_some())
 }
 
 /// Whether the window should be "always on top": never in fullscreen

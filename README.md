@@ -14,6 +14,9 @@ Desktop IPTV player for Windows, Linux and macOS: HLS/HTTP streams, M3U playlist
   controls slide up over the video
 - Audio track switching, picture size (aspect ratio, crop, stretch), always on top
 - Dark, light or system theme
+- Channel logos (`tvg-logo` from the playlist, otherwise the guide's channel
+  icon), cached on disk for a week
+- Programme times in local time
 - Stream info: resolution, codecs, frame rate, HDR, hardware/software decoding, bitrate
 
 ## Install
@@ -41,7 +44,8 @@ openzap playlist.m3u [epg.xml]            # or override them for this run
 Settings (sources, volume, favorites, playback options) are stored in a
 plain-text file: `~/.config/openzap/config.txt` on Linux,
 `%APPDATA%\OpenZap\config.txt` on Windows. It can contain URLs with access
-keys, so keep it private.
+keys, so keep it private. Logos are cached in `~/.cache/openzap/logos` on Linux and
+`%LOCALAPPDATA%\OpenZap\cache\logos` on Windows.
 
 ## Keyboard
 

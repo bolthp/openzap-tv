@@ -1,11 +1,13 @@
 //! OpenZap core library: playlist parsing and helpers.
 
 pub mod browse;
+pub mod clock;
 pub mod config;
 pub mod debuglog;
 pub mod epg;
 pub mod guide;
 pub mod loader;
+pub mod logos;
 pub mod m3u;
 pub mod mask;
 pub mod platform;

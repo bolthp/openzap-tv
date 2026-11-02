@@ -111,13 +111,19 @@ pub fn open(source: &Source, max_bytes: u64) -> Result<Opened, FetchError> {
 
 /// Fetches the whole source as text (for playlists; guides should stream).
 pub fn fetch_text(source: &Source) -> Result<String, FetchError> {
-    let mut opened = open(source, MAX_TEXT_BYTES)?;
+    let bytes = fetch_bytes(source, MAX_TEXT_BYTES)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Fetches the whole source as bytes, up to `max_bytes` (e.g. images).
+pub fn fetch_bytes(source: &Source, max_bytes: u64) -> Result<Vec<u8>, FetchError> {
+    let mut opened = open(source, max_bytes)?;
     let mut bytes = Vec::new();
     opened
         .reader
         .read_to_end(&mut bytes)
         .map_err(|e| read_error(source, e.kind(), opened.compressed))?;
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    Ok(bytes)
 }
 
 /// Turns an I/O error that happened while reading `source` into a message
