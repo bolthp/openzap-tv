@@ -242,14 +242,12 @@ fn is_wsl() -> bool {
 
 /// mpv options that work around known problems on a platform.
 ///
-/// WSL: mpv's automatic OpenGL context probing aborts the whole process
-/// (`vo_x11_init: Assertion '!vo->x11' failed`), so pick a Vulkan context.
+/// WSL: the default `gpu` output aborts the whole process
+/// (`vo_x11_init: Assertion '!vo->x11' failed`), and Vulkan contexts start
+/// "successfully" but never show a window. Plain software `x11` output is
+/// the one verified to work.
 fn platform_options(wsl: bool) -> &'static [(&'static str, &'static str)] {
-    if wsl {
-        &[("vo", "gpu"), ("gpu-context", "x11vk")]
-    } else {
-        &[]
-    }
+    if wsl { &[("vo", "x11")] } else { &[] }
 }
 
 /// Parses `key=value,key=value`. Entries without `=` are skipped.
@@ -348,8 +346,8 @@ mod tests {
     }
 
     #[test]
-    fn wsl_gets_vulkan_context() {
-        assert!(platform_options(true).contains(&("gpu-context", "x11vk")));
+    fn wsl_gets_x11_output() {
+        assert!(platform_options(true).contains(&("vo", "x11")));
         assert!(platform_options(false).is_empty());
     }
 
