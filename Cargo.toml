@@ -6,4 +6,6 @@ license = "GPL-3.0-or-later"
 
 [dependencies]
 eframe = "0.37.0"
+flate2 = "1.1.10"
 quick-xml = "0.42.0"
+ureq = "3.5.0"
