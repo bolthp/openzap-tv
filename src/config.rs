@@ -7,6 +7,8 @@ use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::player::{HardwareDecoding, PlaybackSettings};
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     /// Playlist path or URL used last time.
@@ -22,6 +24,7 @@ pub struct Config {
     pub last_channel: Option<String>,
     /// Start playing `last_channel` when the app starts.
     pub resume_last: bool,
+    pub playback: PlaybackSettings,
 }
 
 impl Default for Config {
@@ -33,6 +36,7 @@ impl Default for Config {
             favorites: BTreeSet::new(),
             last_channel: None,
             resume_last: false,
+            playback: PlaybackSettings::default(),
         }
     }
 }
@@ -58,6 +62,20 @@ impl Config {
                 }
                 "last_channel" if !value.is_empty() => cfg.last_channel = Some(value.to_string()),
                 "resume_last" => cfg.resume_last = matches!(value, "yes" | "true" | "1"),
+                "hwdec" => {
+                    cfg.playback.hwdec = match value {
+                        "auto" => HardwareDecoding::Auto,
+                        _ => HardwareDecoding::Off,
+                    }
+                }
+                "buffer_secs" => {
+                    if let Ok(secs) = value.parse::<u32>() {
+                        cfg.playback.buffer_secs = secs.clamp(
+                            PlaybackSettings::MIN_BUFFER_SECS,
+                            PlaybackSettings::MAX_BUFFER_SECS,
+                        );
+                    }
+                }
                 "volume" => {
                     if let Ok(v) = value.parse::<f64>()
                         && v.is_finite()
@@ -86,6 +104,12 @@ impl Config {
             "resume_last={}\n",
             if self.resume_last { "yes" } else { "no" }
         ));
+        let hwdec = match self.playback.hwdec {
+            HardwareDecoding::Off => "off",
+            HardwareDecoding::Auto => "auto",
+        };
+        out.push_str(&format!("hwdec={hwdec}\n"));
+        out.push_str(&format!("buffer_secs={}\n", self.playback.buffer_secs));
         if let Some(c) = &self.last_channel {
             out.push_str(&format!("last_channel={}\n", one_line(c)));
         }
@@ -185,6 +209,10 @@ mod tests {
             favorites: ["news.example".to_string(), "Sport = One".to_string()].into(),
             last_channel: Some("news.example".into()),
             resume_last: true,
+            playback: PlaybackSettings {
+                hwdec: HardwareDecoding::Auto,
+                buffer_secs: 25,
+            },
         };
         assert_eq!(Config::parse(&cfg.serialize()), cfg);
     }
@@ -197,6 +225,15 @@ mod tests {
         for no in ["no", "false", "0", "maybe"] {
             assert!(!Config::parse(&format!("resume_last={no}")).resume_last);
         }
+    }
+
+    #[test]
+    fn playback_settings_parse_leniently() {
+        let cfg = Config::parse("hwdec=auto\nbuffer_secs=0\n");
+        assert_eq!(cfg.playback.hwdec, HardwareDecoding::Auto);
+        assert_eq!(cfg.playback.buffer_secs, PlaybackSettings::MIN_BUFFER_SECS);
+        let cfg = Config::parse("hwdec=bogus\nbuffer_secs=lots\n");
+        assert_eq!(cfg.playback, PlaybackSettings::default());
     }
 
     #[test]

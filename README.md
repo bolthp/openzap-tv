@@ -24,14 +24,19 @@ OpenZap looks for libmpv next to the executable first, then in the system.
 
 ## Usage
 
+On first start the **Settings** dialog opens: enter the playlist (file path or
+URL) and, optionally, the programme guide. Settings also hold hardware
+decoding, the network buffer and whether to resume the last channel on start.
+
 ```sh
-openzap                                   # type or paste sources in the window
-openzap playlist.m3u [epg.xml]            # or pass them as arguments
+openzap                                   # sources from the settings
+openzap playlist.m3u [epg.xml]            # or override them for this run
 ```
 
-Settings (last sources, volume, favorites) are stored in a plain-text file:
-`~/.config/openzap/config.txt` on Linux, `%APPDATA%\OpenZap\config.txt` on Windows.
-It can contain URLs with access keys, so keep it private.
+Settings (sources, volume, favorites, playback options) are stored in a
+plain-text file: `~/.config/openzap/config.txt` on Linux,
+`%APPDATA%\OpenZap\config.txt` on Windows. It can contain URLs with access
+keys, so keep it private.
 
 ## Keyboard
 

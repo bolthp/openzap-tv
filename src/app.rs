@@ -16,6 +16,7 @@ use openzap::m3u::{Channel, Playlist};
 use openzap::mask::mask_url;
 use openzap::player::{Player, PlayerEvent, PropertyKind, PropertyValue};
 
+use crate::settings::{self, Outcome, SettingsDraft};
 use crate::video::VideoView;
 
 /// What the current stream is doing, as shown on top of the video.
@@ -72,6 +73,8 @@ pub struct App {
     ctx: egui::Context,
     /// Diagnostic log, only with `--debug`.
     log: Option<Arc<DebugLog>>,
+    /// The settings dialog, while open.
+    settings: Option<SettingsDraft>,
     playing: Option<usize>,
     status: String,
     volume: f64,
@@ -132,6 +135,10 @@ impl App {
         app.volume = config.volume;
         app.autoload = !playlist_input.is_empty();
         app.resume_on_load = config.resume_last;
+        // First start: nothing to show yet, so ask for a playlist right away.
+        if playlist_input.is_empty() {
+            app.settings = Some(SettingsDraft::new("", &epg_input, &config));
+        }
         app.playlist_input = playlist_input;
         app.epg_input = epg_input;
         app.config = config;
@@ -177,6 +184,7 @@ impl App {
             video: VideoView::default(),
             ctx: egui::Context::default(),
             log: None,
+            settings: None,
         }
     }
 
@@ -297,30 +305,54 @@ impl App {
         }
     }
 
-    fn source_bar(&mut self, ui: &mut egui::Ui) {
-        let mut load = false;
+    fn top_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label("Playlist");
-            load |= source_field(ui, &mut self.playlist_input, "file path or URL");
-            ui.label("EPG");
-            load |= source_field(ui, &mut self.epg_input, "optional: file path or URL");
-            let busy = self.loading.is_some();
-            if ui.add_enabled(!busy, egui::Button::new("Load")).clicked() {
-                load = true;
-            }
-            if busy {
+            ui.heading("OpenZap");
+            if self.loading.is_some() {
                 ui.spinner();
+                ui.weak("Loading sources...");
             }
-            if ui
-                .checkbox(&mut self.config.resume_last, "Resume last channel on start")
-                .changed()
-            {
-                self.pending_save = true;
-            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Settings").clicked() {
+                    self.settings = Some(SettingsDraft::new(
+                        &self.playlist_input,
+                        &self.epg_input,
+                        &self.config,
+                    ));
+                }
+                let can_reload = self.loading.is_none() && !self.playlist_input.trim().is_empty();
+                if ui
+                    .add_enabled(can_reload, egui::Button::new("Reload"))
+                    .on_hover_text("Load the playlist and guide again")
+                    .clicked()
+                {
+                    self.start_load(ui.ctx());
+                }
+            });
         });
-        if load {
-            self.start_load(ui.ctx());
+    }
+
+    /// Takes over the settings from the dialog. Returns true if the sources
+    /// changed and must be loaded again.
+    fn apply_settings(&mut self, draft: SettingsDraft) -> bool {
+        let playlist = draft.playlist.trim().to_string();
+        let epg = draft.epg.trim().to_string();
+        let sources_changed =
+            playlist != self.playlist_input.trim() || epg != self.epg_input.trim();
+        self.config.playlist = (!playlist.is_empty()).then(|| playlist.clone());
+        self.config.epg = (!epg.is_empty()).then(|| epg.clone());
+        self.playlist_input = playlist;
+        self.epg_input = epg;
+        self.config.resume_last = draft.resume_last;
+        if draft.playback != self.config.playback {
+            self.config.playback = draft.playback;
+            let applied = self.player.as_ref().map(|p| p.apply(&draft.playback));
+            if let Some(Err(e)) = applied {
+                self.status = format!("Cannot apply playback settings: {e}");
+            }
         }
+        self.pending_save = true;
+        sources_changed && !self.playlist_input.is_empty()
     }
 
     pub fn set_context(&mut self, ctx: egui::Context) {
@@ -348,7 +380,7 @@ impl App {
         if self.player.is_some() {
             return true;
         }
-        let player = match Player::new() {
+        let player = match Player::new(&self.config.playback) {
             Ok(player) => player,
             Err(e) => {
                 self.dlog(&format!("player creation failed: {e}"));
@@ -548,8 +580,9 @@ impl App {
     }
 
     fn channel_list(&mut self, ui: &mut egui::Ui, now: i64) {
-        ui.heading("OpenZap");
-        let mut changed = ui.text_edit_singleline(&mut self.query).changed();
+        let mut changed = ui
+            .add(egui::TextEdit::singleline(&mut self.query).hint_text("Search channels"))
+            .changed();
         changed |= ui
             .checkbox(&mut self.favorites_only, "Favorites only")
             .changed();
@@ -679,7 +712,7 @@ impl App {
 
     /// Global keyboard shortcuts (ignored while typing in a text field).
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        if ctx.egui_wants_keyboard_input() {
+        if self.settings.is_some() || ctx.egui_wants_keyboard_input() {
             return;
         }
         let (fullscreen_key, escape, mute, prev, next, time) = ctx.input(|i| {
@@ -815,11 +848,22 @@ impl eframe::App for App {
                 .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
                 .show(ui, |ui| self.video_area(ui, true));
         } else {
-            egui::Panel::top("sources").show(ui, |ui| self.source_bar(ui));
+            egui::Panel::top("top").show(ui, |ui| self.top_bar(ui));
             egui::Panel::left("channels")
                 .default_size(320.0)
                 .show(ui, |ui| self.channel_list(ui, now));
             egui::CentralPanel::default().show(ui, |ui| self.details(ui, now));
+        }
+        let ctx = ui.ctx().clone();
+        if let Some(draft) = &mut self.settings
+            && let Some(outcome) = settings::show(&ctx, draft)
+        {
+            let draft = self.settings.take();
+            if let (Outcome::Save, Some(draft)) = (outcome, draft)
+                && self.apply_settings(draft)
+            {
+                self.start_load(&ctx);
+            }
         }
         if let Some(idx) = self.pending_play.take() {
             self.play(idx);
@@ -875,16 +919,6 @@ fn draw_label(
     let rect = anchor.anchor_size(pos, galley.size());
     painter.rect_filled(rect.expand(10.0), 6.0, egui::Color32::from_black_alpha(170));
     painter.galley(rect.min, galley, egui::Color32::WHITE);
-}
-
-/// Single-line text field; returns true when Enter was pressed in it.
-fn source_field(ui: &mut egui::Ui, text: &mut String, hint: &str) -> bool {
-    let response = ui.add(
-        egui::TextEdit::singleline(text)
-            .hint_text(hint)
-            .desired_width(240.0),
-    );
-    response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
 }
 
 /// Synthetic data (example.com only) so the app is usable without any files.
@@ -1209,5 +1243,47 @@ mod tests {
         assert!(app.pending_volume && app.pending_save);
         app.change_volume(-200.0, 20.0);
         assert_eq!(app.volume, 0.0);
+    }
+
+    fn draft(app: &App) -> SettingsDraft {
+        SettingsDraft::new(&app.playlist_input, &app.epg_input, &app.config)
+    }
+
+    #[test]
+    fn saving_new_sources_requests_reload_and_persists() {
+        let mut app = App::new(Playlist::default(), Epg::default(), vec![]);
+        let mut d = draft(&app);
+        d.playlist = "  http://example.com/list.m3u  ".into();
+        d.resume_last = true;
+
+        assert!(app.apply_settings(d));
+        assert_eq!(app.playlist_input, "http://example.com/list.m3u");
+        assert_eq!(
+            app.config.playlist.as_deref(),
+            Some("http://example.com/list.m3u")
+        );
+        assert_eq!(app.config.epg, None);
+        assert!(app.config.resume_last && app.pending_save);
+    }
+
+    #[test]
+    fn saving_unchanged_sources_does_not_reload() {
+        let mut app = App::new(Playlist::default(), Epg::default(), vec![]);
+        app.playlist_input = "/lists/a.m3u".into();
+        let mut d = draft(&app);
+        d.playback.buffer_secs = 42;
+
+        assert!(!app.apply_settings(d));
+        assert_eq!(app.config.playback.buffer_secs, 42);
+    }
+
+    #[test]
+    fn clearing_the_playlist_does_not_reload() {
+        let mut app = App::new(Playlist::default(), Epg::default(), vec![]);
+        app.playlist_input = "/lists/a.m3u".into();
+        let mut d = draft(&app);
+        d.playlist.clear();
+        assert!(!app.apply_settings(d));
+        assert_eq!(app.config.playlist, None);
     }
 }

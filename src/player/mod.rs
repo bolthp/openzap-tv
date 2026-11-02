@@ -91,6 +91,60 @@ pub enum PropertyValue {
     Unavailable,
 }
 
+/// How video is decoded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HardwareDecoding {
+    /// Always decode on the CPU (most compatible).
+    #[default]
+    Off,
+    /// Use the GPU when mpv considers it safe, fall back to the CPU otherwise.
+    Auto,
+}
+
+impl HardwareDecoding {
+    fn mpv_value(self) -> &'static str {
+        match self {
+            HardwareDecoding::Off => "no",
+            HardwareDecoding::Auto => "auto-safe",
+        }
+    }
+}
+
+/// Playback options the user can change; applied at creation and live.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlaybackSettings {
+    pub hwdec: HardwareDecoding,
+    /// How many seconds of a stream to read ahead (network buffer).
+    pub buffer_secs: u32,
+}
+
+impl PlaybackSettings {
+    pub const MIN_BUFFER_SECS: u32 = 1;
+    pub const MAX_BUFFER_SECS: u32 = 120;
+
+    /// The mpv options these settings stand for.
+    fn mpv_options(&self) -> Vec<(&'static str, String)> {
+        let secs = self
+            .buffer_secs
+            .clamp(Self::MIN_BUFFER_SECS, Self::MAX_BUFFER_SECS)
+            .to_string();
+        vec![
+            ("hwdec", self.hwdec.mpv_value().to_string()),
+            ("cache-secs", secs.clone()),
+            ("demuxer-readahead-secs", secs),
+        ]
+    }
+}
+
+impl Default for PlaybackSettings {
+    fn default() -> Self {
+        PlaybackSettings {
+            hwdec: HardwareDecoding::Off,
+            buffer_secs: 10,
+        }
+    }
+}
+
 /// The mpv instance itself. Shared (`Arc`) between the [`Player`] and any
 /// [`RenderContext`], so it is destroyed only after the last user is gone.
 struct Inner {
@@ -124,12 +178,18 @@ pub struct Player {
 
 impl Player {
     /// Creates a player that renders into the application's OpenGL context
-    /// (`vo=libmpv`) with sensible defaults for live TV.
+    /// (`vo=libmpv`) with sensible defaults for live TV and `settings`.
     ///
-    /// User overrides come from the `OPENZAP_MPV_OPTIONS` environment
-    /// variable, e.g. `OPENZAP_MPV_OPTIONS="hwdec=auto-safe,cache-secs=10"`.
-    pub fn new() -> Result<Self, PlayerError> {
+    /// Developer overrides come last, from the `OPENZAP_MPV_OPTIONS`
+    /// environment variable, e.g. `OPENZAP_MPV_OPTIONS="log-file=mpv.log"`.
+    pub fn new(settings: &PlaybackSettings) -> Result<Self, PlayerError> {
         let mut options: Vec<(String, String)> = vec![("vo".into(), "libmpv".into())];
+        options.extend(
+            settings
+                .mpv_options()
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v)),
+        );
         if let Ok(spec) = std::env::var("OPENZAP_MPV_OPTIONS") {
             options.extend(parse_options(&spec));
         }
@@ -236,6 +296,15 @@ impl Player {
         check(api, unsafe {
             (api.mpv_request_log_messages)(self.inner.raw(), level.as_ptr())
         })
+    }
+
+    /// Applies changed settings to the running player. Decoder changes take
+    /// effect right away (mpv reinitializes the decoder).
+    pub fn apply(&self, settings: &PlaybackSettings) -> Result<(), PlayerError> {
+        for (name, value) in settings.mpv_options() {
+            self.set_property(name, &value)?;
+        }
+        Ok(())
     }
 
     /// Volume in percent (0–130).
@@ -514,6 +583,55 @@ mod tests {
             }
         }
         assert!(got, "expected at least one log message");
+    }
+
+    #[test]
+    fn settings_map_to_mpv_options() {
+        let s = PlaybackSettings {
+            hwdec: HardwareDecoding::Auto,
+            buffer_secs: 30,
+        };
+        assert_eq!(
+            s.mpv_options(),
+            [
+                ("hwdec", "auto-safe".to_string()),
+                ("cache-secs", "30".to_string()),
+                ("demuxer-readahead-secs", "30".to_string()),
+            ]
+        );
+        let extreme = PlaybackSettings {
+            hwdec: HardwareDecoding::Off,
+            buffer_secs: 100_000,
+        };
+        assert_eq!(extreme.mpv_options()[0].1, "no");
+        assert_eq!(extreme.mpv_options()[1].1, "120");
+    }
+
+    #[test]
+    fn settings_are_accepted_by_mpv_at_creation_and_live() {
+        require_mpv!();
+        let p = headless();
+        let auto = PlaybackSettings {
+            hwdec: HardwareDecoding::Auto,
+            buffer_secs: 5,
+        };
+        assert_eq!(p.apply(&auto), Ok(()));
+        assert_eq!(p.apply(&PlaybackSettings::default()), Ok(()));
+
+        let options: Vec<(String, String)> = auto
+            .mpv_options()
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .chain([
+                ("vo".to_string(), "null".to_string()),
+                ("ao".to_string(), "null".to_string()),
+            ])
+            .collect();
+        let refs: Vec<(&str, &str)> = options
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert!(Player::with_options(&refs).is_ok());
     }
 
     #[test]

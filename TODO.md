@@ -7,9 +7,9 @@ Backlog, roughly in priority order. Move items to a commit message when done.
 - [ ] **Stream info on channel switch**: resolution, codec, frame rate, bitrate,
       HDR type, hardware/software decoding — briefly on the video, and on demand
       (e.g. `I` key). Lets you check whether a "4K" channel really is 4K.
-- [ ] **Hardware decoding** (`hwdec`). Today everything, including 4K HDR, is
-      decoded on the CPU. Needs testing per platform (Windows: d3d11va/nvdec,
-      Linux: vaapi/nvdec) and a fallback when interop with our GL context fails.
+- [ ] **Hardware decoding**: switch exists (Settings -> Hardware decoding,
+      `hwdec=auto-safe`), off by default. Test it on Windows (NVIDIA) and Linux
+      (VAAPI/NVIDIA): picture correct? CPU load lower? Then decide the default.
 - [ ] Give up on streams that never deliver a frame (e.g. 20 s in "Loading...")
       with a clear message instead of waiting forever.
 - [ ] Check `PageUp` / `PageDown` channel switching on Windows (not tested yet).
@@ -27,6 +27,11 @@ Backlog, roughly in priority order. Move items to a commit message when done.
 
 - [ ] Design pass over the whole UI (layout, spacing, typography, icons).
 - [ ] File picker for playlist/EPG instead of typing paths.
+
+## Settings
+
+- [ ] Proxy (see Network) goes into the Settings dialog.
+- [ ] Possibly: audio/subtitle language preference, deinterlacing.
 
 ## Network
 
