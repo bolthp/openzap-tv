@@ -260,8 +260,8 @@ impl App {
         });
 
         let nn = self.guide.now_next(&self.epg, idx, now);
+        // Channels without a guide just show their name.
         let Some(p) = nn.now else {
-            ui.weak("No programme information");
             return;
         };
         ui.horizontal(|ui| {

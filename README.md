@@ -47,7 +47,8 @@ keys, so keep it private.
 
 | Key | Action |
 |---|---|
-| click a channel | play it (right-click: add to / remove from favorites) |
+| click / double-click a channel | select / play it (right-click: favorites) |
+| `Enter` | play the selected channel |
 | `PageUp` / `PageDown` | previous / next channel |
 | `F` / double-click video | fullscreen |
 | `Esc` | leave fullscreen |

@@ -107,12 +107,16 @@ impl App {
         }
 
         let mut clicked = None;
+        let mut play = None;
         let mut favorite = None;
         scroll.show_rows(ui, row_height, self.visible.len(), |ui, range| {
             for &idx in &self.visible[range] {
                 let response = self.channel_row(ui, idx, row_height, now);
                 if response.clicked() {
                     clicked = Some(idx);
+                }
+                if response.double_clicked() {
+                    play = Some(idx);
                 }
                 let is_favorite = self.is_favorite(idx);
                 response.context_menu(|ui| {
@@ -130,6 +134,8 @@ impl App {
         });
         if let Some(idx) = clicked {
             self.selected = Some(idx);
+        }
+        if let Some(idx) = play {
             self.pending_play = Some(idx);
         }
         if let Some(idx) = favorite {
@@ -147,11 +153,9 @@ impl App {
         }
         let channel = &self.playlist.channels[idx];
         let visuals = ui.visuals();
-        let active = match self.playing {
-            Some(p) => p == idx,
-            None => self.selected == Some(idx),
-        };
-        let (fill, text, weak) = if active {
+        let selected = self.selected == Some(idx);
+        let playing = self.playing == Some(idx);
+        let (fill, text, weak) = if selected {
             let c = visuals.selection.stroke.color;
             (visuals.selection.bg_fill, c, c.gamma_multiply(0.75))
         } else if response.hovered() {
@@ -170,6 +174,16 @@ impl App {
         };
         let painter = ui.painter();
         painter.rect_filled(rect, 4.0, fill);
+        if playing {
+            // Accent stripe on the left marks the channel on screen.
+            let stripe = egui::Rect::from_min_size(rect.min, egui::vec2(4.0, rect.height()));
+            let accent = if selected {
+                visuals.selection.stroke.color
+            } else {
+                visuals.selection.bg_fill
+            };
+            painter.rect_filled(stripe, 2.0, accent);
+        }
         let inner = rect.shrink2(egui::vec2(8.0, 5.0));
 
         let body = egui::TextStyle::Body.resolve(ui.style());

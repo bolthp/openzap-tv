@@ -171,8 +171,10 @@ pub struct App {
     tracks_refreshed_at: Option<f64>,
     /// Scroll the list to this channel on the next frame.
     scroll_to: Option<usize>,
-    /// Window level and theme still need to be sent to the window.
+    /// The theme still needs to be sent to egui.
     view_pending: bool,
+    /// The window level last sent (true = always on top).
+    on_top_applied: Option<bool>,
     /// Short on-screen message and the input time (seconds) it expires at.
     osd: Option<(String, f64)>,
     info: InfoOverlay,
@@ -261,6 +263,7 @@ impl App {
             tracks_refreshed_at: None,
             scroll_to: None,
             view_pending: true,
+            on_top_applied: None,
             osd: None,
             info: InfoOverlay::default(),
             favorites_only: false,
@@ -666,10 +669,10 @@ impl App {
         let pressed = |key| ctx.input(|i| i.key_pressed(key));
         let time = ctx.input(|i| i.time);
         if pressed(egui::Key::F) {
-            toggle_fullscreen(ctx);
+            self.set_fullscreen(ctx, !is_fullscreen(ctx));
         }
         if pressed(egui::Key::Escape) && is_fullscreen(ctx) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+            self.set_fullscreen(ctx, false);
         }
         if pressed(egui::Key::M) {
             self.toggle_mute(time);
@@ -688,6 +691,11 @@ impl App {
         }
         if pressed(egui::Key::A) {
             self.next_audio_track(time);
+        }
+        if pressed(egui::Key::Enter)
+            && let Some(idx) = self.selected
+        {
+            self.pending_play = Some(idx);
         }
         if pressed(egui::Key::PageUp) {
             self.switch_channel(-1);
@@ -714,7 +722,7 @@ impl App {
                     self.pending_save = true;
                 }
                 Action::ToggleOnTop => self.toggle_on_top(time),
-                Action::ToggleFullscreen => toggle_fullscreen(ctx),
+                Action::ToggleFullscreen => self.set_fullscreen(ctx, !is_fullscreen(ctx)),
                 Action::SetAspect(mode) => self.set_aspect(mode, time),
                 Action::SetAudio(id) => self.select_audio_track(id, time),
                 Action::OpenSettings => {
@@ -750,7 +758,6 @@ impl App {
 
     fn toggle_on_top(&mut self, time: f64) {
         self.config.view.always_on_top = !self.config.view.always_on_top;
-        self.view_pending = true;
         self.pending_save = true;
         let text = if self.config.view.always_on_top {
             "Always on top"
@@ -808,17 +815,38 @@ impl App {
         self.show_osd(format!("Audio: {label}"), time);
     }
 
-    /// Sends the window level and theme to the window.
-    fn apply_view(&mut self, ctx: &egui::Context) {
-        if !std::mem::take(&mut self.view_pending) {
+    /// Enters or leaves fullscreen. A fullscreen window is on top anyway;
+    /// keeping it "always on top" as well makes Windows treat it as an
+    /// exclusive fullscreen app and switch the display mode (the screen
+    /// goes black for seconds). So the level is dropped first.
+    fn set_fullscreen(&mut self, ctx: &egui::Context, on: bool) {
+        if on {
+            self.send_on_top(ctx, false);
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(on));
+        // Leaving: `apply_view` restores the level once the window is back.
+    }
+
+    fn send_on_top(&mut self, ctx: &egui::Context, on_top: bool) {
+        if self.on_top_applied == Some(on_top) {
             return;
         }
-        let level = if self.config.view.always_on_top {
+        self.on_top_applied = Some(on_top);
+        let level = if on_top {
             egui::WindowLevel::AlwaysOnTop
         } else {
             egui::WindowLevel::Normal
         };
         ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(level));
+    }
+
+    /// Sends the window level and theme to the window when they change.
+    fn apply_view(&mut self, ctx: &egui::Context) {
+        let on_top = wants_on_top(self.config.view.always_on_top, is_fullscreen(ctx));
+        self.send_on_top(ctx, on_top);
+        if !std::mem::take(&mut self.view_pending) {
+            return;
+        }
         ctx.set_theme(match self.config.view.theme {
             Theme::System => egui::ThemePreference::System,
             Theme::Dark => egui::ThemePreference::Dark,
@@ -896,8 +924,10 @@ fn is_fullscreen(ctx: &egui::Context) -> bool {
     ctx.input(|i| i.viewport().fullscreen.unwrap_or(false))
 }
 
-fn toggle_fullscreen(ctx: &egui::Context) {
-    ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!is_fullscreen(ctx)));
+/// Whether the window should be "always on top": never in fullscreen
+/// (see `App::set_fullscreen`).
+fn wants_on_top(setting: bool, fullscreen: bool) -> bool {
+    setting && !fullscreen
 }
 
 /// Text on a dark rounded background, anchored at `pos`.
@@ -1282,13 +1312,32 @@ mod tests {
         let view = app.config.view;
         assert!(!view.list_visible);
         assert_eq!(view.list_side, Side::Right);
-        assert!(view.always_on_top && app.view_pending);
+        assert!(view.always_on_top);
         assert_eq!(view.aspect, AspectMode::Fill);
         assert!(app.pending_save && app.actions.is_empty());
         assert_eq!(
             app.osd.map(|(t, _)| t).as_deref(),
             Some("Picture: Fill (crop)")
         );
+    }
+
+    #[test]
+    fn fullscreen_window_is_never_always_on_top() {
+        assert!(wants_on_top(true, false));
+        assert!(!wants_on_top(true, true));
+        assert!(!wants_on_top(false, false));
+    }
+
+    #[test]
+    fn window_level_is_sent_only_on_change() {
+        let mut app = App::new(Playlist::default(), Epg::default(), vec![]);
+        let ctx = egui::Context::default();
+        app.config.view.always_on_top = true;
+        app.apply_view(&ctx);
+        assert_eq!(app.on_top_applied, Some(true));
+        // Going fullscreen drops the level right away.
+        app.set_fullscreen(&ctx, true);
+        assert_eq!(app.on_top_applied, Some(false));
     }
 
     #[test]
