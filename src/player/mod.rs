@@ -65,6 +65,13 @@ pub enum PlayerEvent {
     /// mpv is shutting down. The instance is unusable from now on: drop this
     /// `Player` and create a new one.
     Shutdown,
+    /// A message from mpv's log (see [`Player::request_log_messages`]).
+    /// The text may contain stream URLs: mask it before writing it anywhere.
+    Log {
+        prefix: String,
+        level: String,
+        text: String,
+    },
     /// An observed property changed (see [`Player::observe`]).
     Property { name: String, value: PropertyValue },
 }
@@ -220,6 +227,17 @@ impl Player {
         })
     }
 
+    /// Delivers mpv's own log messages of `min_level` and above (`"error"`,
+    /// `"warn"`, `"info"`, `"v"`, `"debug"`) as [`PlayerEvent::Log`].
+    pub fn request_log_messages(&self, min_level: &str) -> Result<(), PlayerError> {
+        let level = cstring(min_level)?;
+        let api = self.inner.api;
+        // SAFETY: valid handle; `level` is NUL-terminated.
+        check(api, unsafe {
+            (api.mpv_request_log_messages)(self.inner.raw(), level.as_ptr())
+        })
+    }
+
     /// Volume in percent (0–130).
     pub fn set_volume(&self, percent: f64) -> Result<(), PlayerError> {
         self.set_property("volume", &percent.clamp(0.0, 130.0).to_string())
@@ -243,6 +261,19 @@ impl Player {
                 sys::EVENT_SHUTDOWN => return Some(PlayerEvent::Shutdown),
                 sys::EVENT_START_FILE => return Some(PlayerEvent::Loading),
                 sys::EVENT_FILE_LOADED => return Some(PlayerEvent::Started),
+                sys::EVENT_LOG_MESSAGE if !event.data.is_null() => {
+                    // SAFETY: for LOG_MESSAGE events `data` points to an
+                    // mpv_event_log_message with NUL-terminated strings.
+                    let msg = unsafe { &*(event.data as *const sys::EventLogMessage) };
+                    let text = |p: *const c_char| {
+                        unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
+                    };
+                    return Some(PlayerEvent::Log {
+                        prefix: text(msg.prefix),
+                        level: text(msg.level),
+                        text: text(msg.text).trim_end().to_string(),
+                    });
+                }
                 sys::EVENT_PROPERTY_CHANGE if !event.data.is_null() => {
                     // SAFETY: for PROPERTY_CHANGE events `data` points to an
                     // mpv_event_property whose `name` is NUL-terminated and
@@ -460,6 +491,29 @@ mod tests {
                 Some(PropertyValue::Unavailable)
             );
         }
+    }
+
+    #[test]
+    fn log_messages_are_delivered() {
+        require_mpv!();
+        let p = headless();
+        p.request_log_messages("v").unwrap();
+        p.load("/nonexistent/openzap-log-test.mp4").unwrap();
+        let mut got = false;
+        for _ in 0..50 {
+            if let Some(PlayerEvent::Log {
+                prefix,
+                level,
+                text,
+            }) = p.wait(0.1)
+            {
+                assert!(!prefix.is_empty() && !level.is_empty());
+                assert!(!text.ends_with('\n'));
+                got = true;
+                break;
+            }
+        }
+        assert!(got, "expected at least one log message");
     }
 
     #[test]

@@ -1,12 +1,14 @@
 //! egui application: channel browser with now/next details.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use eframe::egui;
 use openzap::browse::{Filter, filter_channels, format_duration, groups, progress};
 use openzap::config::{self, Config};
+use openzap::debuglog::DebugLog;
 use openzap::epg::{Epg, EpgChannel, Programme};
 use openzap::guide::GuideIndex;
 use openzap::loader::{self, Loaded};
@@ -68,6 +70,8 @@ pub struct App {
     player: Option<Player>,
     /// Handle for repaint requests from other threads (set by `main`).
     ctx: egui::Context,
+    /// Diagnostic log, only with `--debug`.
+    log: Option<Arc<DebugLog>>,
     playing: Option<usize>,
     status: String,
     volume: f64,
@@ -172,6 +176,7 @@ impl App {
             resume_on_load: false,
             video: VideoView::default(),
             ctx: egui::Context::default(),
+            log: None,
         }
     }
 
@@ -217,6 +222,22 @@ impl App {
     }
 
     fn apply_loaded(&mut self, loaded: Loaded, playlist_src: &str, epg_src: &str) {
+        self.dlog(&format!(
+            "loaded: playlist {}, epg {}",
+            match &loaded.playlist {
+                Ok(p) => format!("{} channels", p.channels.len()),
+                Err(e) => format!("error: {e}"),
+            },
+            match &loaded.epg {
+                None => "none".to_string(),
+                Some(Ok(e)) => format!(
+                    "{} channels, {} programmes",
+                    e.channels.len(),
+                    e.programmes.len()
+                ),
+                Some(Err(e)) => format!("error: {e}"),
+            }
+        ));
         match loaded.playlist {
             Ok(playlist) => {
                 self.set_playlist(playlist);
@@ -306,6 +327,19 @@ impl App {
         self.ctx = ctx;
     }
 
+    /// Enables the diagnostic log (`--debug`).
+    pub fn set_debug_log(&mut self, log: Arc<DebugLog>) {
+        self.video.enable_diagnostics();
+        self.log = Some(log);
+    }
+
+    /// Writes to the debug log if enabled (URLs are masked by the log).
+    fn dlog(&self, msg: &str) {
+        if let Some(log) = &self.log {
+            log.line(msg);
+        }
+    }
+
     /// Makes sure an mpv instance with an attached video view exists.
     ///
     /// Runs inside `ui`, where eframe keeps the GL context current, which
@@ -317,13 +351,21 @@ impl App {
         let player = match Player::new() {
             Ok(player) => player,
             Err(e) => {
+                self.dlog(&format!("player creation failed: {e}"));
                 self.status = format!("Playback unavailable: {e}");
                 return false;
             }
         };
         if let Err(e) = self.video.attach(&player, &self.ctx) {
+            self.dlog(&format!("video attach failed: {e}"));
             self.status = format!("Video output unavailable: {e}");
             return false;
+        }
+        if self.log.is_some() {
+            if let Err(e) = player.request_log_messages("v") {
+                self.dlog(&format!("cannot get mpv log: {e}"));
+            }
+            self.dlog("player created, video attached");
         }
         // Buffering state for the overlay; without it playback still works.
         for (name, kind) in [
@@ -352,6 +394,7 @@ impl App {
         let Some(channel) = self.playlist.channels.get(idx) else {
             return;
         };
+        self.dlog(&format!("play channel #{idx}: {}", channel.name));
         let result = self.player.as_ref().map(|p| p.load(&channel.url));
         match result {
             Some(Ok(())) => {
@@ -426,7 +469,18 @@ impl App {
             }
         }
         for ev in events {
+            match &ev {
+                PlayerEvent::Log {
+                    prefix,
+                    level,
+                    text,
+                } => self.dlog(&format!("mpv [{prefix}] {level}: {text}")),
+                other => self.dlog(&format!("player event: {other:?}")),
+            }
             self.apply_event(ev);
+        }
+        for report in self.video.take_reports() {
+            self.dlog(&report);
         }
     }
 
@@ -441,6 +495,7 @@ impl App {
                 self.status = "Playing".into();
             }
             PlayerEvent::Property { name, value } => self.apply_property(&name, value),
+            PlayerEvent::Log { .. } => {} // only written to the debug log
             // Also fired when a new channel replaces the old one, so `playing`
             // is left alone; it is cleared by `stop` and by failures.
             PlayerEvent::Ended => {

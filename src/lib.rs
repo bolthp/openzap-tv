@@ -2,6 +2,7 @@
 
 pub mod browse;
 pub mod config;
+pub mod debuglog;
 pub mod epg;
 pub mod guide;
 pub mod loader;

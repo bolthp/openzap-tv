@@ -56,6 +56,37 @@ pub fn mask_url(url: &str) -> String {
     out
 }
 
+/// Masks every URL found in free text (e.g. a log line) with [`mask_url`].
+///
+/// A URL starts at an `http(s)://` / `rtmp://` style scheme and ends at
+/// whitespace or a quote/bracket character.
+pub fn mask_urls_in_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(pos) = rest.find("://") {
+        // Walk back over the scheme letters (e.g. "https").
+        let scheme_start = rest[..pos]
+            .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.'))
+            .map_or(0, |i| i + 1);
+        if scheme_start == pos {
+            // "://" without a scheme: not a URL, copy it and move on.
+            out.push_str(&rest[..pos + 3]);
+            rest = &rest[pos + 3..];
+            continue;
+        }
+        let end = rest[pos..]
+            .find(|c: char| {
+                c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '`' | ')' | ']')
+            })
+            .map_or(rest.len(), |i| pos + i);
+        out.push_str(&rest[..scheme_start]);
+        out.push_str(&mask_url(&rest[scheme_start..end]));
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 fn mask_userinfo(base: &str) -> String {
     let Some(scheme_end) = base.find("://") else {
         return base.to_string();
@@ -201,6 +232,35 @@ mod tests {
         assert_eq!(
             mask_url("http://u:p@example.com/live/a/b/1.ts?token=t#frag"),
             "http://***@example.com/live/***/***/1.ts?token=***#frag"
+        );
+    }
+
+    #[test]
+    fn masks_urls_inside_text() {
+        assert_eq!(
+            mask_urls_in_text("Opening http://example.com/a?token=k1 failed"),
+            "Opening http://example.com/a?token=*** failed"
+        );
+        assert_eq!(
+            mask_urls_in_text(
+                "two: 'https://u:p@example.com/x' and (http://example.com/live/a/b/1.ts)"
+            ),
+            "two: 'https://***@example.com/x' and (http://example.com/live/***/***/1.ts)"
+        );
+    }
+
+    #[test]
+    fn text_without_urls_is_unchanged() {
+        for text in ["", "plain log line", "ratio 16:9 ://odd", "path C:\\x\\y"] {
+            assert_eq!(mask_urls_in_text(text), text);
+        }
+    }
+
+    #[test]
+    fn url_at_end_of_text() {
+        assert_eq!(
+            mask_urls_in_text("stream=http://example.com/iptv/AB12CD34EF56/1/index.m3u8"),
+            "stream=http://example.com/iptv/***/1/index.m3u8"
         );
     }
 

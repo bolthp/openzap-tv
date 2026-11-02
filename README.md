@@ -33,6 +33,24 @@ Settings (last sources, volume, favorites) are stored in a plain-text file:
 `~/.config/openzap/config.txt` on Linux, `%APPDATA%\OpenZap\config.txt` on Windows.
 It can contain URLs with access keys, so keep it private.
 
+## Keyboard
+
+| Key | Action |
+|---|---|
+| `F` / double-click video | fullscreen |
+| `Esc` | leave fullscreen |
+| `M` | mute |
+| mouse wheel over video | volume |
+| `PageUp` / `PageDown` | previous / next channel |
+
+## Troubleshooting
+
+Start with `--debug` (on Windows: double-click `openzap-debug.bat`) to write
+`openzap-debug.log` next to the executable: GPU and OpenGL version, player
+events, mpv's messages and a periodic check whether video frames arrive.
+Stream URLs in the log are masked, but it may still contain channel names and
+server host names — look through it before sharing.
+
 ## Build from source
 
 Requires a stable Rust toolchain. libmpv is loaded at run time, so it is

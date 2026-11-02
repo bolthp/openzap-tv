@@ -84,6 +84,15 @@ pub(super) mod sys {
         pub data: *mut c_void,
     }
 
+    /// `mpv_event_log_message` (prefix of it).
+    #[repr(C)]
+    pub struct EventLogMessage {
+        pub prefix: *const c_char,
+        pub level: *const c_char,
+        pub text: *const c_char,
+    }
+
+    pub const EVENT_LOG_MESSAGE: c_int = 2;
     pub const FORMAT_FLAG: c_int = 3;
     pub const FORMAT_INT64: c_int = 4;
     pub const EVENT_PROPERTY_CHANGE: c_int = 22;
@@ -139,6 +148,7 @@ mpv_api! {
     fn mpv_command(*mut sys::Handle, *mut *const c_char) -> c_int;
     fn mpv_wait_event(*mut sys::Handle, f64) -> *mut sys::Event;
     fn mpv_observe_property(*mut sys::Handle, u64, *const c_char, c_int) -> c_int;
+    fn mpv_request_log_messages(*mut sys::Handle, *const c_char) -> c_int;
     fn mpv_error_string(c_int) -> *const c_char;
     fn mpv_render_context_create(*mut *mut sys::RenderRaw, *mut sys::Handle, *mut sys::RenderParam) -> c_int;
     fn mpv_render_context_set_update_callback(

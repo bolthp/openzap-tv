@@ -64,7 +64,7 @@ jobs:
         run: |
           $name = "openzap-$env:GITHUB_REF_NAME-${{ matrix.target }}"
           New-Item -ItemType Directory -Path $name | Out-Null
-          Copy-Item target/release/openzap.exe, LICENSE, README.md $name
+          Copy-Item target/release/openzap.exe, scripts/openzap-debug.bat, LICENSE, README.md $name
           ./scripts/fetch-libmpv-windows.ps1 -Dest $name
           Compress-Archive -Path $name -DestinationPath "$name.zip"
           "ASSET=$name.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8

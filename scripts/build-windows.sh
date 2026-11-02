@@ -46,7 +46,7 @@ if [ ! -s "$CACHE/libmpv-2.dll" ]; then
 fi
 
 mkdir -p "$DEST"
-cp "target/$TARGET/release/openzap.exe" "$DEST/"
+cp "target/$TARGET/release/openzap.exe" scripts/openzap-debug.bat "$DEST/"
 [ -s "$CACHE/libmpv-2.dll" ] || { echo "libmpv-2.dll was not extracted" >&2; exit 1; }
 cp -u "$CACHE/libmpv-2.dll" "$DEST/"
 echo "ready: $DEST/openzap.exe"

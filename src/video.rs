@@ -2,6 +2,7 @@
 //! copied into the egui frame inside a paint callback.
 
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 use eframe::egui_glow;
@@ -16,6 +17,18 @@ struct Target {
     height: i32,
 }
 
+/// How often diagnostics summarize rendering.
+const REPORT_EVERY: Duration = Duration::from_secs(2);
+
+/// Rendering statistics for the debug log.
+#[derive(Default)]
+struct Diagnostics {
+    gl_info_reported: bool,
+    renders: u32,
+    last_report: Option<Instant>,
+    reports: Vec<String>,
+}
+
 #[derive(Default)]
 struct State {
     render: Option<RenderContext>,
@@ -24,6 +37,8 @@ struct State {
     needs_render: bool,
     /// Last GL error from setting up the target, reported once.
     error: Option<String>,
+    /// Present only when diagnostics are enabled (`--debug`).
+    diagnostics: Option<Diagnostics>,
 }
 
 /// Shared handle to the embedded video. Cloning is cheap: the paint
@@ -52,6 +67,22 @@ impl VideoView {
     /// context current (in `ui` or `on_exit`).
     pub fn detach(&self) {
         self.lock().render = None;
+    }
+
+    /// Starts collecting rendering statistics (see [`take_reports`](Self::take_reports)).
+    pub fn enable_diagnostics(&self) {
+        self.lock()
+            .diagnostics
+            .get_or_insert_with(Diagnostics::default);
+    }
+
+    /// Diagnostic lines collected since the last call.
+    pub fn take_reports(&self) -> Vec<String> {
+        self.lock()
+            .diagnostics
+            .as_mut()
+            .map(|d| std::mem::take(&mut d.reports))
+            .unwrap_or_default()
     }
 
     pub fn is_attached(&self) -> bool {
@@ -115,6 +146,17 @@ impl State {
                     }
                 }
             }
+            if let Some(diag) = &mut self.diagnostics
+                && !diag.gl_info_reported
+            {
+                diag.gl_info_reported = true;
+                diag.reports.push(format!(
+                    "OpenGL: {} | {} | {}",
+                    gl.get_parameter_string(glow::VENDOR),
+                    gl.get_parameter_string(glow::RENDERER),
+                    gl.get_parameter_string(glow::VERSION),
+                ));
+            }
             let (Some(render), Some(target)) = (&self.render, &self.target) else {
                 return;
             };
@@ -129,8 +171,43 @@ impl State {
                 gl.bind_buffer(glow::ARRAY_BUFFER, None);
                 gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, None);
                 match render.render(target.fbo.0.get(), width, height, glow::RGBA8 as i32) {
-                    Ok(()) => self.needs_render = false,
+                    Ok(()) => {
+                        self.needs_render = false;
+                        if let Some(diag) = &mut self.diagnostics {
+                            diag.renders += 1;
+                        }
+                    }
                     Err(e) => self.error = Some(e.to_string()),
+                }
+            }
+
+            if let Some(diag) = &mut self.diagnostics {
+                let due = diag.last_report.is_none_or(|t| t.elapsed() >= REPORT_EVERY);
+                if due {
+                    diag.last_report = Some(Instant::now());
+                    // Sample the middle of the frame mpv drew: all-black for
+                    // seconds while "Playing" means video is not getting through.
+                    let mut px = [0u8; 4];
+                    gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(target.fbo));
+                    gl.read_pixels(
+                        width / 2,
+                        height / 2,
+                        1,
+                        1,
+                        glow::RGBA,
+                        glow::UNSIGNED_BYTE,
+                        glow::PixelPackData::Slice(Some(&mut px)),
+                    );
+                    let looks = if px[..3].iter().all(|&c| c < 10) {
+                        "black"
+                    } else {
+                        "content"
+                    };
+                    diag.reports.push(format!(
+                        "video: {} frames rendered, target {width}x{height}, center pixel {:?} ({looks})",
+                        std::mem::take(&mut diag.renders),
+                        &px[..3]
+                    ));
                 }
             }
 
