@@ -111,8 +111,23 @@ pub struct Player {
 
 impl Player {
     /// Creates a player with sensible defaults for live TV.
+    ///
+    /// Applies platform workarounds (see `platform_options`) and then any
+    /// user overrides from the `OPENZAP_MPV_OPTIONS` environment variable,
+    /// e.g. `OPENZAP_MPV_OPTIONS="vo=x11,hwdec=no"`.
     pub fn new() -> Result<Self, PlayerError> {
-        Self::with_options(&[])
+        let mut options: Vec<(String, String)> = platform_options(is_wsl())
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        if let Ok(spec) = std::env::var("OPENZAP_MPV_OPTIONS") {
+            options.extend(parse_options(&spec));
+        }
+        let refs: Vec<(&str, &str)> = options
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        Self::with_options(&refs)
     }
 
     /// Like `new`, with extra mpv options (applied after the defaults).
@@ -221,6 +236,31 @@ impl Drop for Player {
     }
 }
 
+fn is_wsl() -> bool {
+    std::env::var_os("WSL_DISTRO_NAME").is_some()
+}
+
+/// mpv options that work around known problems on a platform.
+///
+/// WSL: mpv's automatic OpenGL context probing aborts the whole process
+/// (`vo_x11_init: Assertion '!vo->x11' failed`), so pick a Vulkan context.
+fn platform_options(wsl: bool) -> &'static [(&'static str, &'static str)] {
+    if wsl {
+        &[("vo", "gpu"), ("gpu-context", "x11vk")]
+    } else {
+        &[]
+    }
+}
+
+/// Parses `key=value,key=value`. Entries without `=` are skipped.
+fn parse_options(spec: &str) -> Vec<(String, String)> {
+    spec.split(',')
+        .filter_map(|entry| entry.split_once('='))
+        .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+        .filter(|(k, _)| !k.is_empty())
+        .collect()
+}
+
 fn cstring(s: &str) -> Result<CString, PlayerError> {
     CString::new(s).map_err(|_| PlayerError::InvalidString)
 }
@@ -293,6 +333,24 @@ mod tests {
             }
         }
         assert!(failed, "expected a Failed event");
+    }
+
+    #[test]
+    fn parses_env_options() {
+        assert_eq!(
+            parse_options("vo=x11, hwdec = no,junk,=x"),
+            [
+                ("vo".to_string(), "x11".to_string()),
+                ("hwdec".to_string(), "no".to_string())
+            ]
+        );
+        assert!(parse_options("").is_empty());
+    }
+
+    #[test]
+    fn wsl_gets_vulkan_context() {
+        assert!(platform_options(true).contains(&("gpu-context", "x11vk")));
+        assert!(platform_options(false).is_empty());
     }
 
     #[test]
