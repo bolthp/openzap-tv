@@ -247,6 +247,24 @@ impl Player {
         })
     }
 
+    /// Reads a property as text; `None` if it is unavailable right now
+    /// (e.g. no video yet) or unknown.
+    pub fn get_property(&self, name: &str) -> Option<String> {
+        let name = cstring(name).ok()?;
+        let api = self.inner.api;
+        // SAFETY: valid handle; `name` is NUL-terminated. A non-NULL result
+        // is a NUL-terminated string owned by us, freed with `mpv_free`.
+        unsafe {
+            let raw = (api.mpv_get_property_string)(self.inner.raw(), name.as_ptr());
+            if raw.is_null() {
+                return None;
+            }
+            let value = CStr::from_ptr(raw).to_string_lossy().into_owned();
+            (api.mpv_free)(raw.cast());
+            Some(value)
+        }
+    }
+
     fn command(&self, args: &[&str]) -> Result<(), PlayerError> {
         let owned: Vec<CString> = args.iter().map(|a| cstring(a)).collect::<Result<_, _>>()?;
         // mpv wants a NULL-terminated array of C strings.
@@ -517,6 +535,17 @@ mod tests {
             }
         }
         assert!(got, "expected a Shutdown event");
+    }
+
+    #[test]
+    fn reads_properties_as_text() {
+        require_mpv!();
+        let p = headless();
+        p.set_volume(42.0).unwrap();
+        assert_eq!(p.get_property("volume").as_deref(), Some("42.000000"));
+        // Nothing is playing, so there is no video.
+        assert_eq!(p.get_property("video-params/w"), None);
+        assert_eq!(p.get_property("no-such-property"), None);
     }
 
     /// Waits for the next Property event about `name`.

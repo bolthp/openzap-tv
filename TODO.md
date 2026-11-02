@@ -4,9 +4,6 @@ Backlog, roughly in priority order. Move items to a commit message when done.
 
 ## Playback
 
-- [ ] **Stream info on channel switch**: resolution, codec, frame rate, bitrate,
-      HDR type, hardware/software decoding — briefly on the video, and on demand
-      (e.g. `I` key). Lets you check whether a "4K" channel really is 4K.
 - [ ] **Hardware decoding** is on by default (`auto-safe`, falls back to the
       CPU). Verified: Windows + NVIDIA (nvdec, 4K HEVC). Still to check:
       Windows Intel/AMD, Linux VAAPI/NVIDIA (VAAPI may need the X11/Wayland
@@ -15,6 +12,28 @@ Backlog, roughly in priority order. Move items to a commit message when done.
       with a clear message instead of waiting forever.
 - [ ] Check `PageUp` / `PageDown` channel switching on Windows (not tested yet).
 - [ ] Scroll the channel list to the channel switched to with `PageUp`/`PageDown`.
+
+## Inspired by OTT-Play
+
+Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
+
+- [ ] **Archive (catch-up)**: play past programmes from the guide. Playlists
+      mark it with `tvg-rec="<days>"` or `catchup`/`catchup-days`/
+      `catchup-source`; URL schemes differ (flussonic `index-<start>-<dur>`,
+      `?utc=&lutc=` shift, `append`). Needs per-scheme URL building + tests.
+- [ ] **Timeshift** on archive channels: pause live, jump to the programme
+      start, seek ±15 s / 1 / 3 / 10 min, previous/next programme, back to live.
+- [ ] **Programme list** per channel (past with archive marks, now, upcoming);
+      replaces "Day schedule" below.
+- [ ] Channel numbers, digit entry to jump, previous channel (`Backspace`).
+- [ ] `I` cycles: channel + programme → programme description → stream info → off.
+- [ ] Audio track / subtitle switching (`A` / `S`).
+- [ ] Aspect ratio / zoom (`Z`), always on top, restart stream.
+- [ ] Fullscreen-first navigation: channel list and group picker as overlays
+      over the video, fully usable from the keyboard (and a remote).
+- [ ] Several playlists (providers) at once.
+- [ ] Parental control: PIN for chosen groups/channels.
+- [ ] Picture-in-picture (second player instance) — later.
 
 ## Programme guide
 

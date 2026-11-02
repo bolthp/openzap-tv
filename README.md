@@ -10,6 +10,7 @@ Desktop IPTV player for Windows, Linux and macOS: HLS/HTTP streams, M3U playlist
 - Search, filter by group, favorites
 - "On air now" and "next" for every channel
 - Video plays inside the main window (libmpv, OpenGL)
+- Stream info: resolution, codecs, frame rate, HDR, hardware/software decoding, bitrate
 
 ## Install
 
@@ -45,6 +46,7 @@ keys, so keep it private.
 | `F` / double-click video | fullscreen |
 | `Esc` | leave fullscreen |
 | `M` | mute |
+| `I` | show / hide stream info (resolution, codecs, HDR, decoder, bitrate) |
 | mouse wheel over video | volume |
 | `PageUp` / `PageDown` | previous / next channel |
 

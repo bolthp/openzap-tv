@@ -145,6 +145,8 @@ mpv_api! {
     fn mpv_terminate_destroy(*mut sys::Handle);
     fn mpv_set_option_string(*mut sys::Handle, *const c_char, *const c_char) -> c_int;
     fn mpv_set_property_string(*mut sys::Handle, *const c_char, *const c_char) -> c_int;
+    fn mpv_get_property_string(*mut sys::Handle, *const c_char) -> *mut c_char;
+    fn mpv_free(*mut c_void);
     fn mpv_command(*mut sys::Handle, *mut *const c_char) -> c_int;
     fn mpv_wait_event(*mut sys::Handle, f64) -> *mut sys::Event;
     fn mpv_observe_property(*mut sys::Handle, u64, *const c_char, c_int) -> c_int;

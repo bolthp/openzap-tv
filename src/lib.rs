@@ -11,3 +11,4 @@ pub mod mask;
 pub mod platform;
 pub mod player;
 pub mod source;
+pub mod streaminfo;

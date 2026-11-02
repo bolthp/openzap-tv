@@ -15,6 +15,7 @@ use openzap::loader::{self, Loaded};
 use openzap::m3u::{Channel, Playlist};
 use openzap::mask::mask_url;
 use openzap::player::{Player, PlayerEvent, PropertyKind, PropertyValue};
+use openzap::streaminfo::StreamInfo;
 
 use crate::settings::{self, Outcome, SettingsDraft};
 use crate::video::VideoView;
@@ -45,6 +46,60 @@ fn overlay_text(state: &StreamState) -> Option<String> {
 const VOLUME_STEP: f64 = 5.0;
 /// How long short on-screen messages (volume, mute) stay visible, seconds.
 const OSD_SECS: f64 = 1.5;
+
+/// How long stream info stays up after a channel starts, seconds.
+const INFO_BRIEF_SECS: f64 = 6.0;
+/// How often shown stream info is re-read from mpv (bitrate changes), seconds.
+const INFO_REFRESH_SECS: f64 = 1.0;
+
+/// The stream info panel: shown briefly when a stream starts, or pinned
+/// with the `I` key. Times are egui input times in seconds.
+#[derive(Debug, Default)]
+struct InfoOverlay {
+    pinned: bool,
+    /// A stream started; the brief display begins on the next frame.
+    brief_pending: bool,
+    brief_until: Option<f64>,
+    lines: Vec<String>,
+    refreshed_at: Option<f64>,
+}
+
+impl InfoOverlay {
+    fn toggle(&mut self) {
+        self.pinned = !self.pinned;
+        self.brief_until = None;
+        self.brief_pending = false;
+    }
+
+    fn stream_started(&mut self) {
+        self.brief_pending = true;
+    }
+
+    /// Forgets the previous stream's details.
+    fn reset(&mut self) {
+        self.lines.clear();
+        self.refreshed_at = None;
+        self.brief_until = None;
+        self.brief_pending = false;
+    }
+
+    fn is_visible(&mut self, time: f64) -> bool {
+        if std::mem::take(&mut self.brief_pending) {
+            self.brief_until = Some(time + INFO_BRIEF_SECS);
+        }
+        self.pinned || self.brief_until.is_some_and(|until| time < until)
+    }
+
+    fn needs_refresh(&self, time: f64) -> bool {
+        self.refreshed_at
+            .is_none_or(|t| time - t >= INFO_REFRESH_SECS)
+    }
+
+    fn set_lines(&mut self, lines: Vec<String>, time: f64) {
+        self.lines = lines;
+        self.refreshed_at = Some(time);
+    }
+}
 
 /// A background load in progress, with the inputs it was started for.
 struct PendingLoad {
@@ -89,6 +144,7 @@ pub struct App {
     pending_mute: bool,
     /// Short on-screen message and the input time (seconds) it expires at.
     osd: Option<(String, f64)>,
+    info: InfoOverlay,
     favorites_only: bool,
     /// EPG matching and now/next lookup; rebuilt whenever playlist or EPG change.
     guide: GuideIndex,
@@ -172,6 +228,7 @@ impl App {
             muted: false,
             pending_mute: false,
             osd: None,
+            info: InfoOverlay::default(),
             favorites_only: false,
             guide,
             config: Config::default(),
@@ -520,10 +577,12 @@ impl App {
         match ev {
             PlayerEvent::Loading => {
                 self.video.clear();
+                self.info.reset();
                 self.stream = StreamState::Opening;
                 self.status = "Loading...".into();
             }
             PlayerEvent::Started => {
+                self.info.stream_started();
                 self.stream = StreamState::Playing;
                 self.status = "Playing".into();
             }
@@ -542,6 +601,7 @@ impl App {
                 self.status = "Player closed. Press Play to start again.".into();
             }
             PlayerEvent::Failed(msg) => {
+                self.info.reset();
                 self.stream = StreamState::Failed(msg.clone());
                 self.playing = None;
                 self.status = format!("Playback failed: {msg}");
@@ -670,14 +730,48 @@ impl App {
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
                 &text,
+                egui::TextStyle::Heading,
                 ui,
             );
         }
         let time = ui.input(|i| i.time);
+        if showing_video && self.info.is_visible(time) {
+            if self.info.needs_refresh(time)
+                && let Some(player) = &self.player
+            {
+                let info = StreamInfo::from_properties(|name| player.get_property(name));
+                self.info.set_lines(info.lines(), time);
+            }
+            let mut text = self
+                .playing
+                .and_then(|i| self.playlist.channels.get(i))
+                .map(|c| c.name.clone())
+                .unwrap_or_default();
+            for line in &self.info.lines {
+                text.push('\n');
+                text.push_str(line);
+            }
+            let corner = rect.left_top() + egui::vec2(16.0, 16.0);
+            draw_label(
+                &painter,
+                corner,
+                egui::Align2::LEFT_TOP,
+                &text,
+                egui::TextStyle::Body,
+                ui,
+            );
+        }
         if let Some((text, until)) = &self.osd {
             if time < *until {
                 let corner = rect.right_top() + egui::vec2(-16.0, 16.0);
-                draw_label(&painter, corner, egui::Align2::RIGHT_TOP, text, ui);
+                draw_label(
+                    &painter,
+                    corner,
+                    egui::Align2::RIGHT_TOP,
+                    text,
+                    egui::TextStyle::Heading,
+                    ui,
+                );
                 ui.ctx()
                     .request_repaint_after(Duration::from_secs_f64(until - time));
             } else {
@@ -715,13 +809,14 @@ impl App {
         if self.settings.is_some() || ctx.egui_wants_keyboard_input() {
             return;
         }
-        let (fullscreen_key, escape, mute, prev, next, time) = ctx.input(|i| {
+        let (fullscreen_key, escape, mute, prev, next, info, time) = ctx.input(|i| {
             (
                 i.key_pressed(egui::Key::F),
                 i.key_pressed(egui::Key::Escape),
                 i.key_pressed(egui::Key::M),
                 i.key_pressed(egui::Key::PageUp),
                 i.key_pressed(egui::Key::PageDown),
+                i.key_pressed(egui::Key::I),
                 i.time,
             )
         });
@@ -733,6 +828,9 @@ impl App {
         }
         if mute {
             self.toggle_mute(time);
+        }
+        if info {
+            self.info.toggle();
         }
         if prev {
             self.switch_channel(-1);
@@ -912,9 +1010,10 @@ fn draw_label(
     pos: egui::Pos2,
     anchor: egui::Align2,
     text: &str,
+    style: egui::TextStyle,
     ui: &egui::Ui,
 ) {
-    let font = egui::TextStyle::Heading.resolve(ui.style());
+    let font = style.resolve(ui.style());
     let galley = painter.layout_no_wrap(text.to_owned(), font, egui::Color32::WHITE);
     let rect = anchor.anchor_size(pos, galley.size());
     painter.rect_filled(rect.expand(10.0), 6.0, egui::Color32::from_black_alpha(170));
@@ -1226,6 +1325,48 @@ mod tests {
         app.pending_play = None;
         app.switch_channel(1);
         assert_eq!(app.pending_play, None);
+    }
+
+    #[test]
+    fn stream_info_shows_briefly_on_start_and_toggles() {
+        let mut info = InfoOverlay::default();
+        assert!(!info.is_visible(0.0));
+
+        info.stream_started();
+        assert!(info.is_visible(10.0));
+        assert!(info.is_visible(10.0 + INFO_BRIEF_SECS - 0.1));
+        assert!(!info.is_visible(10.0 + INFO_BRIEF_SECS));
+
+        info.toggle();
+        assert!(info.is_visible(100.0));
+        // Pinned info survives channel changes.
+        info.reset();
+        info.stream_started();
+        assert!(info.is_visible(1000.0));
+        info.toggle();
+        assert!(!info.is_visible(1000.0));
+    }
+
+    #[test]
+    fn stream_info_refreshes_once_per_interval() {
+        let mut info = InfoOverlay::default();
+        assert!(info.needs_refresh(5.0));
+        info.set_lines(vec!["Video: 1920×1080".into()], 5.0);
+        assert!(!info.needs_refresh(5.5));
+        assert!(info.needs_refresh(5.0 + INFO_REFRESH_SECS));
+        info.reset();
+        assert!(info.lines.is_empty() && info.needs_refresh(5.1));
+    }
+
+    #[test]
+    fn player_events_reset_and_start_stream_info() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, Vec::new());
+        app.info.set_lines(vec!["old".into()], 0.0);
+        app.apply_event(PlayerEvent::Loading);
+        assert!(app.info.lines.is_empty());
+        app.apply_event(PlayerEvent::Started);
+        assert!(app.info.is_visible(1.0));
     }
 
     #[test]
