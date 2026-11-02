@@ -6,6 +6,11 @@
 - GUI: egui
 - Playback: libmpv (dynamically linked, shipped with the app)
 
+## Platforms
+
+- Targets: Windows and Linux (primary), macOS (secondary, tested by others or in a VM).
+- WSL is only a development/testing environment, not a target. WSL-specific workarounds (`platform.rs`, `platform_options` in `player.rs`) must stay isolated, small and clearly marked; never let them shape the design for real platforms.
+
 ## Rules
 
 - Prefer `std`. Add external crates only when necessary, and explain why.
