@@ -2,9 +2,13 @@ name: Release
 
 # Publishes a GitHub release when a version tag is pushed:
 #   git tag v0.1.0 && git push origin v0.1.0
+# Running it by hand (Actions -> Release -> Run workflow) builds the
+# archives as a dry run: they are kept as workflow artifacts, nothing is
+# published.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -27,15 +31,20 @@ jobs:
           - os: windows-latest
             target: windows-x86_64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - name: Tag must match the version in Cargo.toml
+      - name: Version (tag must match Cargo.toml)
         shell: bash
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "Tag $GITHUB_REF_NAME does not match Cargo.toml version $version" >&2
-            exit 1
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+              echo "Tag $GITHUB_REF_NAME does not match Cargo.toml version $version" >&2
+              exit 1
+            fi
+            echo "RELEASE_NAME=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_NAME=v$version-dryrun" >> "$GITHUB_ENV"
           fi
 
       - uses: dtolnay/rust-toolchain@stable
@@ -52,7 +61,7 @@ jobs:
       - name: Package (Linux)
         if: runner.os == 'Linux'
         run: |
-          name="openzap-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          name="openzap-${RELEASE_NAME}-${{ matrix.target }}"
           mkdir "$name"
           cp target/release/openzap LICENSE README.md "$name/"
           tar -czf "$name.tar.gz" "$name"
@@ -62,14 +71,14 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $name = "openzap-$env:GITHUB_REF_NAME-${{ matrix.target }}"
+          $name = "openzap-$env:RELEASE_NAME-${{ matrix.target }}"
           New-Item -ItemType Directory -Path $name | Out-Null
           Copy-Item target/release/openzap.exe, scripts/openzap-debug.bat, LICENSE, README.md $name
           ./scripts/fetch-libmpv-windows.ps1 -Dest $name
           Compress-Archive -Path $name -DestinationPath "$name.zip"
           "ASSET=$name.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}
           path: ${{ env.ASSET }}
@@ -78,9 +87,10 @@ jobs:
   publish:
     name: Publish release
     needs: build
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
