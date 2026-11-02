@@ -9,7 +9,7 @@ Desktop IPTV player for Windows, Linux and macOS: HLS/HTTP streams, M3U playlist
 - Open an M3U playlist and an optional XMLTV guide from a file or an HTTP(S) URL (`.gz` is supported)
 - Search, filter by group, favorites
 - "On air now" and "next" for every channel
-- Playback through libmpv
+- Video plays inside the main window (libmpv, OpenGL)
 
 ## Install
 
