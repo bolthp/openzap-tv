@@ -35,7 +35,7 @@ impl fmt::Debug for Channel {
     }
 }
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Playlist {
     pub channels: Vec<Channel>,
 }

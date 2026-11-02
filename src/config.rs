@@ -20,6 +20,8 @@ pub struct Config {
     pub favorites: BTreeSet<String>,
     /// Key of the channel played last.
     pub last_channel: Option<String>,
+    /// Start playing `last_channel` when the app starts.
+    pub resume_last: bool,
 }
 
 impl Default for Config {
@@ -30,6 +32,7 @@ impl Default for Config {
             volume: 80.0,
             favorites: BTreeSet::new(),
             last_channel: None,
+            resume_last: false,
         }
     }
 }
@@ -54,6 +57,7 @@ impl Config {
                     cfg.favorites.insert(value.to_string());
                 }
                 "last_channel" if !value.is_empty() => cfg.last_channel = Some(value.to_string()),
+                "resume_last" => cfg.resume_last = matches!(value, "yes" | "true" | "1"),
                 "volume" => {
                     if let Ok(v) = value.parse::<f64>()
                         && v.is_finite()
@@ -78,6 +82,10 @@ impl Config {
             out.push_str(&format!("epg={}\n", one_line(e)));
         }
         out.push_str(&format!("volume={}\n", self.volume));
+        out.push_str(&format!(
+            "resume_last={}\n",
+            if self.resume_last { "yes" } else { "no" }
+        ));
         if let Some(c) = &self.last_channel {
             out.push_str(&format!("last_channel={}\n", one_line(c)));
         }
@@ -176,8 +184,19 @@ mod tests {
             volume: 42.5,
             favorites: ["news.example".to_string(), "Sport = One".to_string()].into(),
             last_channel: Some("news.example".into()),
+            resume_last: true,
         };
         assert_eq!(Config::parse(&cfg.serialize()), cfg);
+    }
+
+    #[test]
+    fn resume_last_accepts_common_spellings() {
+        for yes in ["yes", "true", "1"] {
+            assert!(Config::parse(&format!("resume_last={yes}")).resume_last);
+        }
+        for no in ["no", "false", "0", "maybe"] {
+            assert!(!Config::parse(&format!("resume_last={no}")).resume_last);
+        }
     }
 
     #[test]

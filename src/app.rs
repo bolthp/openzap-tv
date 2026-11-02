@@ -14,6 +14,8 @@ use openzap::m3u::{Channel, Playlist};
 use openzap::mask::mask_url;
 use openzap::player::{Player, PlayerEvent};
 
+use crate::video::VideoView;
+
 /// A background load in progress, with the inputs it was started for.
 struct PendingLoad {
     rx: Receiver<Loaded>,
@@ -33,7 +35,12 @@ pub struct App {
     /// Load problems, shown in the UI.
     notices: Vec<String>,
     /// Created on first Play; dropped when mpv shuts down (window closed).
+    /// Embedded video. Declared before `player`: fields drop in order, so
+    /// the renderer goes first (it would keep mpv alive otherwise).
+    video: VideoView,
     player: Option<Player>,
+    /// Handle for repaint requests from other threads (set by `main`).
+    ctx: egui::Context,
     playing: Option<usize>,
     status: String,
     volume: f64,
@@ -54,6 +61,8 @@ pub struct App {
     loading: Option<PendingLoad>,
     /// Start loading on the first frame (a repaint handle is needed).
     autoload: bool,
+    /// Play the restored last channel once the startup load finishes.
+    resume_on_load: bool,
 }
 
 impl App {
@@ -86,6 +95,7 @@ impl App {
         };
         app.volume = config.volume;
         app.autoload = !playlist_input.is_empty();
+        app.resume_on_load = config.resume_last;
         app.playlist_input = playlist_input;
         app.epg_input = epg_input;
         app.config = config;
@@ -123,6 +133,9 @@ impl App {
             epg_input: String::new(),
             loading: None,
             autoload: false,
+            resume_on_load: false,
+            video: VideoView::default(),
+            ctx: egui::Context::default(),
         }
     }
 
@@ -171,6 +184,9 @@ impl App {
         match loaded.playlist {
             Ok(playlist) => {
                 self.set_playlist(playlist);
+                if std::mem::take(&mut self.resume_on_load) {
+                    self.pending_play = self.selected;
+                }
                 self.config.playlist = Some(playlist_src.to_string());
                 self.config.epg = (!epg_src.is_empty()).then(|| epg_src.to_string());
                 self.pending_save = true;
@@ -238,27 +254,50 @@ impl App {
             if busy {
                 ui.spinner();
             }
+            if ui
+                .checkbox(&mut self.config.resume_last, "Resume last channel on start")
+                .changed()
+            {
+                self.pending_save = true;
+            }
         });
         if load {
             self.start_load(ui.ctx());
         }
     }
 
-    /// Makes sure an mpv instance exists, creating one if needed.
+    pub fn set_context(&mut self, ctx: egui::Context) {
+        self.ctx = ctx;
+    }
+
+    /// Makes sure an mpv instance with an attached video view exists.
+    ///
+    /// Runs inside `ui`, where eframe keeps the GL context current, which
+    /// creating the renderer requires.
     fn ensure_player(&mut self) -> bool {
         if self.player.is_some() {
             return true;
         }
-        match Player::new() {
-            Ok(player) => {
-                self.player = Some(player);
-                true
-            }
+        let player = match Player::new() {
+            Ok(player) => player,
             Err(e) => {
                 self.status = format!("Playback unavailable: {e}");
-                false
+                return false;
             }
+        };
+        if let Err(e) = self.video.attach(&player, &self.ctx) {
+            self.status = format!("Video output unavailable: {e}");
+            return false;
         }
+        self.player = Some(player);
+        true
+    }
+
+    /// Releases the renderer and then mpv (GL context must be current).
+    fn release_player(&mut self) {
+        self.video.detach();
+        self.player = None;
+        self.playing = None;
     }
 
     fn play(&mut self, idx: usize) {
@@ -317,11 +356,9 @@ impl App {
             // is left alone; it is cleared by `stop` and by failures.
             PlayerEvent::Ended => self.status = "Stopped".into(),
             PlayerEvent::Shutdown => {
-                // Dropping the player destroys mpv and its frozen window;
-                // the next Play creates a fresh instance.
-                self.player = None;
-                self.playing = None;
-                self.status = "Video window closed. Press Play to start again.".into();
+                // The next Play creates a fresh instance.
+                self.release_player();
+                self.status = "Player closed. Press Play to start again.".into();
             }
             PlayerEvent::Failed(msg) => {
                 self.playing = None;
@@ -404,7 +441,31 @@ impl App {
         });
     }
 
+    /// 16:9 video area at the top of the details panel.
+    fn video_area(&mut self, ui: &mut egui::Ui) {
+        let width = ui.available_width();
+        let height = (width * 9.0 / 16.0).min(ui.available_height() * 0.6);
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+        ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
+        if self.playing.is_some() && self.video.is_attached() {
+            self.video.paint(ui, rect);
+        } else {
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "Nothing playing",
+                egui::TextStyle::Body.resolve(ui.style()),
+                egui::Color32::GRAY,
+            );
+        }
+        if let Some(e) = self.video.take_error() {
+            self.status = format!("Video error: {e}");
+        }
+        ui.add_space(6.0);
+    }
+
     fn details(&mut self, ui: &mut egui::Ui, now: i64) {
+        self.video_area(ui);
         for notice in &self.notices {
             ui.colored_label(egui::Color32::LIGHT_RED, notice);
         }
@@ -484,6 +545,12 @@ impl App {
 }
 
 impl eframe::App for App {
+    /// The GL context is still alive here, so mpv's renderer can be freed
+    /// properly before the window goes away.
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.release_player();
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let now = unix_now();
         if std::mem::take(&mut self.autoload) {
@@ -615,6 +682,7 @@ mod tests {
         assert!(app.player.is_none());
         assert_eq!(app.playing, None);
         assert!(app.status.contains("closed"));
+        assert!(!app.video.is_attached());
     }
 
     fn loaded(playlist: Result<Playlist, String>, epg: Option<Result<Epg, String>>) -> Loaded {
@@ -723,6 +791,22 @@ mod tests {
         app.toggle_favorite(1); // removes it again
         assert!(app.config.favorites.is_empty());
         assert!(app.visible.is_empty());
+    }
+
+    #[test]
+    fn resume_plays_restored_channel_only_on_startup_load() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(Playlist::default(), Epg::default(), vec![]);
+        app.config.last_channel = Some("film.example".into());
+        app.resume_on_load = true;
+
+        app.apply_loaded(loaded(Ok(playlist.clone()), None), "p", "");
+        assert_eq!(app.pending_play, Some(1));
+
+        // A later manual reload must not start playback by itself.
+        app.pending_play = None;
+        app.apply_loaded(loaded(Ok(playlist), Some(Ok(epg))), "p", "e");
+        assert_eq!(app.pending_play, None);
     }
 
     #[test]

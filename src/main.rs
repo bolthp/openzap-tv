@@ -2,6 +2,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+mod video;
 
 use openzap::platform;
 
@@ -14,10 +15,22 @@ fn main() -> eframe::Result {
 
     // Usage: openzap [PLAYLIST.m3u [EPG.xml]]
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let app = app::App::from_args(&args);
+    let mut app = app::App::from_args(&args);
+    let options = eframe::NativeOptions {
+        // mpv renders video through OpenGL, so egui must use it too.
+        renderer: eframe::Renderer::Glow,
+        viewport: eframe::egui::ViewportBuilder::default()
+            .with_title("OpenZap")
+            .with_inner_size([1280.0, 760.0])
+            .with_min_inner_size([720.0, 480.0]),
+        ..Default::default()
+    };
     eframe::run_native(
         "OpenZap",
-        eframe::NativeOptions::default(),
-        Box::new(|_cc| Ok(Box::new(app))),
+        options,
+        Box::new(move |cc| {
+            app.set_context(cc.egui_ctx.clone());
+            Ok(Box::new(app))
+        }),
     )
 }
