@@ -120,7 +120,7 @@ impl Player {
     /// user overrides from the `OPENZAP_MPV_OPTIONS` environment variable,
     /// e.g. `OPENZAP_MPV_OPTIONS="vo=x11,hwdec=no"`.
     pub fn new() -> Result<Self, PlayerError> {
-        let mut options: Vec<(String, String)> = platform_options(is_wsl())
+        let mut options: Vec<(String, String)> = platform_options(crate::platform::is_wsl())
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
@@ -239,10 +239,6 @@ impl Drop for Player {
         // SAFETY: the handle is valid and never used after this point.
         unsafe { sys::mpv_terminate_destroy(self.raw()) };
     }
-}
-
-fn is_wsl() -> bool {
-    std::env::var_os("WSL_DISTRO_NAME").is_some()
 }
 
 /// mpv options that work around known problems on a platform.
