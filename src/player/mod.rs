@@ -94,10 +94,11 @@ pub enum PropertyValue {
 /// How video is decoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HardwareDecoding {
-    /// Always decode on the CPU (most compatible).
-    #[default]
+    /// Always decode on the CPU.
     Off,
-    /// Use the GPU when mpv considers it safe, fall back to the CPU otherwise.
+    /// Use the GPU when mpv considers it safe, fall back to the CPU otherwise
+    /// (verified on Windows/NVIDIA: nvdec, also for 4K HEVC).
+    #[default]
     Auto,
 }
 
@@ -139,7 +140,7 @@ impl PlaybackSettings {
 impl Default for PlaybackSettings {
     fn default() -> Self {
         PlaybackSettings {
-            hwdec: HardwareDecoding::Off,
+            hwdec: HardwareDecoding::default(),
             buffer_secs: 10,
         }
     }

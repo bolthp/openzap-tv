@@ -63,9 +63,11 @@ impl Config {
                 "last_channel" if !value.is_empty() => cfg.last_channel = Some(value.to_string()),
                 "resume_last" => cfg.resume_last = matches!(value, "yes" | "true" | "1"),
                 "hwdec" => {
-                    cfg.playback.hwdec = match value {
-                        "auto" => HardwareDecoding::Auto,
-                        _ => HardwareDecoding::Off,
+                    // Unknown values keep the default.
+                    match value {
+                        "auto" => cfg.playback.hwdec = HardwareDecoding::Auto,
+                        "off" => cfg.playback.hwdec = HardwareDecoding::Off,
+                        _ => {}
                     }
                 }
                 "buffer_secs" => {
@@ -229,11 +231,12 @@ mod tests {
 
     #[test]
     fn playback_settings_parse_leniently() {
-        let cfg = Config::parse("hwdec=auto\nbuffer_secs=0\n");
-        assert_eq!(cfg.playback.hwdec, HardwareDecoding::Auto);
+        let cfg = Config::parse("hwdec=off\nbuffer_secs=0\n");
+        assert_eq!(cfg.playback.hwdec, HardwareDecoding::Off);
         assert_eq!(cfg.playback.buffer_secs, PlaybackSettings::MIN_BUFFER_SECS);
         let cfg = Config::parse("hwdec=bogus\nbuffer_secs=lots\n");
         assert_eq!(cfg.playback, PlaybackSettings::default());
+        assert_eq!(PlaybackSettings::default().hwdec, HardwareDecoding::Auto);
     }
 
     #[test]

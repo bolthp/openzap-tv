@@ -7,9 +7,10 @@ Backlog, roughly in priority order. Move items to a commit message when done.
 - [ ] **Stream info on channel switch**: resolution, codec, frame rate, bitrate,
       HDR type, hardware/software decoding — briefly on the video, and on demand
       (e.g. `I` key). Lets you check whether a "4K" channel really is 4K.
-- [ ] **Hardware decoding**: switch exists (Settings -> Hardware decoding,
-      `hwdec=auto-safe`), off by default. Test it on Windows (NVIDIA) and Linux
-      (VAAPI/NVIDIA): picture correct? CPU load lower? Then decide the default.
+- [ ] **Hardware decoding** is on by default (`auto-safe`, falls back to the
+      CPU). Verified: Windows + NVIDIA (nvdec, 4K HEVC). Still to check:
+      Windows Intel/AMD, Linux VAAPI/NVIDIA (VAAPI may need the X11/Wayland
+      display passed to mpv's renderer for zero-copy).
 - [ ] Give up on streams that never deliver a frame (e.g. 20 s in "Loading...")
       with a clear message instead of waiting forever.
 - [ ] Check `PageUp` / `PageDown` channel switching on Windows (not tested yet).
