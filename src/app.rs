@@ -21,7 +21,7 @@ pub struct App {
     selected: Option<usize>,
     /// Load problems, shown in the UI.
     notices: Vec<String>,
-    /// `None` if libmpv could not be initialized (reason is in `notices`).
+    /// Created on first Play; dropped when mpv shuts down (window closed).
     player: Option<Player>,
     playing: Option<usize>,
     status: String,
@@ -48,12 +48,7 @@ impl App {
                 (playlist, epg)
             }
         };
-        let mut app = Self::new(playlist, epg, notices);
-        match Player::new() {
-            Ok(player) => app.player = Some(player),
-            Err(e) => app.notices.push(format!("Playback unavailable: {e}")),
-        }
-        app
+        Self::new(playlist, epg, notices)
     }
 
     fn new(playlist: Playlist, epg: Epg, notices: Vec<String>) -> Self {
@@ -78,7 +73,27 @@ impl App {
         }
     }
 
+    /// Makes sure an mpv instance exists, creating one if needed.
+    fn ensure_player(&mut self) -> bool {
+        if self.player.is_some() {
+            return true;
+        }
+        match Player::new() {
+            Ok(player) => {
+                self.player = Some(player);
+                true
+            }
+            Err(e) => {
+                self.status = format!("Playback unavailable: {e}");
+                false
+            }
+        }
+    }
+
     fn play(&mut self, idx: usize) {
+        if !self.ensure_player() {
+            return;
+        }
         let Some(channel) = self.playlist.channels.get(idx) else {
             return;
         };
@@ -90,7 +105,7 @@ impl App {
                 self.apply_volume();
             }
             Some(Err(e)) => self.status = format!("Cannot start playback: {e}"),
-            None => self.status = "Playback unavailable".into(),
+            None => {}
         }
     }
 
@@ -128,6 +143,13 @@ impl App {
             // Also fired when a new channel replaces the old one, so `playing`
             // is left alone; it is cleared by `stop` and by failures.
             PlayerEvent::Ended => self.status = "Stopped".into(),
+            PlayerEvent::Shutdown => {
+                // Dropping the player destroys mpv and its frozen window;
+                // the next Play creates a fresh instance.
+                self.player = None;
+                self.playing = None;
+                self.status = "Video window closed. Press Play to start again.".into();
+            }
             PlayerEvent::Failed(msg) => {
                 self.playing = None;
                 self.status = format!("Playback failed: {msg}");
@@ -371,12 +393,16 @@ mod tests {
     }
 
     #[test]
-    fn play_without_player_reports_status() {
+    fn shutdown_event_drops_player_and_resets_state() {
         let (playlist, epg) = demo_data(0);
         let mut app = App::new(playlist, epg, vec![]);
-        app.play(0);
-        assert_eq!(app.status, "Playback unavailable");
+        app.player = Some(Player::with_options(&[("vo", "null"), ("ao", "null")]).unwrap());
+        app.playing = Some(1);
+
+        app.apply_event(PlayerEvent::Shutdown);
+        assert!(app.player.is_none());
         assert_eq!(app.playing, None);
+        assert!(app.status.contains("closed"));
     }
 
     #[test]

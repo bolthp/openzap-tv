@@ -39,6 +39,7 @@ mod sys {
     }
 
     pub const EVENT_NONE: c_int = 0;
+    pub const EVENT_SHUTDOWN: c_int = 1;
     pub const EVENT_START_FILE: c_int = 6;
     pub const EVENT_END_FILE: c_int = 7;
     pub const EVENT_FILE_LOADED: c_int = 8;
@@ -99,6 +100,9 @@ pub enum PlayerEvent {
     Ended,
     /// Playback failed; the message is mpv's generic error text.
     Failed(String),
+    /// mpv is shutting down (e.g. the user closed its window). The instance
+    /// is unusable from now on: drop this `Player` and create a new one.
+    Shutdown,
 }
 
 /// Owns one mpv instance. Dropping it shuts mpv down and closes its window.
@@ -210,6 +214,7 @@ impl Player {
             let event = unsafe { &*sys::mpv_wait_event(self.raw(), timeout_secs) };
             match event.event_id {
                 sys::EVENT_NONE => return None,
+                sys::EVENT_SHUTDOWN => return Some(PlayerEvent::Shutdown),
                 sys::EVENT_START_FILE => return Some(PlayerEvent::Loading),
                 sys::EVENT_FILE_LOADED => return Some(PlayerEvent::Started),
                 sys::EVENT_END_FILE if !event.data.is_null() => {
@@ -349,6 +354,21 @@ mod tests {
     fn wsl_gets_x11_output() {
         assert!(platform_options(true).contains(&("vo", "x11")));
         assert!(platform_options(false).is_empty());
+    }
+
+    #[test]
+    fn quit_command_produces_shutdown_event() {
+        // Closing mpv's window has the same effect as the `quit` command.
+        let p = headless();
+        p.command(&["quit"]).unwrap();
+        let mut got = false;
+        for _ in 0..50 {
+            if p.wait(0.1) == Some(PlayerEvent::Shutdown) {
+                got = true;
+                break;
+            }
+        }
+        assert!(got, "expected a Shutdown event");
     }
 
     #[test]
