@@ -1,0 +1,97 @@
+name: Release
+
+# Publishes a GitHub release when a version tag is pushed:
+#   git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # Older Ubuntu on purpose: the binary then runs on more distributions
+          # (it needs glibc at least as new as the build machine's).
+          - os: ubuntu-22.04
+            target: linux-x86_64
+          - os: windows-latest
+            target: windows-x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag must match the version in Cargo.toml
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match Cargo.toml version $version" >&2
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          name="openzap-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir "$name"
+          cp target/release/openzap LICENSE README.md "$name/"
+          tar -czf "$name.tar.gz" "$name"
+          echo "ASSET=$name.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $name = "openzap-$env:GITHUB_REF_NAME-${{ matrix.target }}"
+          New-Item -ItemType Directory -Path $name | Out-Null
+          Copy-Item target/release/openzap.exe, LICENSE, README.md $name
+          ./scripts/fetch-libmpv-windows.ps1 -Dest $name
+          Compress-Archive -Path $name -DestinationPath "$name.zip"
+          "ASSET=$name.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l dist
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --prerelease

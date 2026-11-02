@@ -19,3 +19,10 @@
 - Every new feature comes with unit tests. Before committing run `cargo fmt`, `cargo clippy`, `cargo test`.
 - The author is new to Rust: in chat replies, briefly explain non-obvious concepts (ownership, lifetimes, traits). Keep code comments concise.
 - Code, comments, docs and commit messages in English.
+
+## Releases
+
+- CI (`.github/workflows/ci.yml`) runs fmt, clippy (`-D warnings`) and tests on Linux and Windows for every push.
+- To release: bump `version` in `Cargo.toml`, commit, tag `vX.Y.Z` and push the tag. `release.yml` builds the Linux and Windows archives and publishes a GitHub pre-release (it checks that the tag matches `Cargo.toml`).
+- The Windows libmpv build is pinned (tag + SHA-256) in `scripts/fetch-libmpv-windows.ps1`.
+- libmpv is loaded at run time (`src/player.rs`); keep the build free of libmpv link-time dependencies.
