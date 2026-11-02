@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::epg::{Epg, Programme};
+use crate::epg::{Epg, Programme, normalize_name as norm};
 use crate::m3u::{Channel, Playlist};
 
 /// What is on air at a given moment and what follows.
@@ -29,10 +29,6 @@ pub struct GuideIndex {
     epg_ids: Vec<Option<String>>,
     /// EPG channel id -> indices into `epg.programmes`, sorted by start.
     by_channel: HashMap<String, Vec<usize>>,
-}
-
-fn norm(s: &str) -> String {
-    s.trim().to_lowercase()
 }
 
 impl GuideIndex {

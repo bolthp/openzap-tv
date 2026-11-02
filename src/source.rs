@@ -1,17 +1,23 @@
-//! Loading playlist/EPG text from a local file or an HTTP(S) URL.
+//! Reading playlist/EPG data from a local file or an HTTP(S) URL.
 //!
-//! Gzip data is detected by its magic bytes, so `.xml.gz` files work
-//! whatever their name or content type. Error messages never contain the
-//! URL: it may carry an access key.
+//! Data is streamed: [`open`] returns a reader that decompresses on the
+//! fly, so large guides never have to sit in memory as one block. Gzip is
+//! detected by its magic bytes, so `.xml.gz` works whatever the name or
+//! content type. Error messages never contain the URL: it may carry an
+//! access key.
 
 use std::fmt;
-use std::io::Read;
+use std::io::{self, BufRead, BufReader, ErrorKind, Read};
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// Upper bound for both the download and the decompressed text.
-const MAX_BYTES: u64 = 256 * 1024 * 1024;
-const TIMEOUT: Duration = Duration::from_secs(30);
+/// Default limit of decompressed bytes for [`fetch_text`].
+pub const MAX_TEXT_BYTES: u64 = 256 * 1024 * 1024;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+/// No data for this long on an open connection means it is stuck. There is
+/// deliberately no total timeout: a big guide on a slow line may take minutes.
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
@@ -63,38 +69,90 @@ impl fmt::Display for FetchError {
 
 impl std::error::Error for FetchError {}
 
-/// Fetches the source and returns its text (gunzipped if needed).
-pub fn fetch_text(source: &Source) -> Result<String, FetchError> {
-    let bytes = match source {
-        Source::File(path) => read_file(path)?,
-        Source::Url(url) => download(url)?,
-    };
-    let bytes = gunzip_if_needed(bytes)?;
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+/// A source opened for streaming.
+pub struct Opened {
+    /// Yields the decompressed bytes; fails with `ErrorKind::FileTooLarge`
+    /// once more than the requested maximum comes out.
+    pub reader: Box<dyn BufRead + Send>,
+    /// The data was gzip-compressed.
+    pub compressed: bool,
 }
 
-fn read_file(path: &PathBuf) -> Result<Vec<u8>, FetchError> {
-    let file = std::fs::File::open(path)
-        .map_err(|e| FetchError::File(format!("cannot read {}: {}", path.display(), e.kind())))?;
-    read_limited(file).map_err(|e| match e {
-        ReadError::TooLarge => FetchError::TooLarge,
-        ReadError::Io(kind) => FetchError::File(format!("cannot read {}: {kind}", path.display())),
+/// Opens the source for streaming, gunzipping on the fly if needed.
+pub fn open(source: &Source, max_bytes: u64) -> Result<Opened, FetchError> {
+    let raw: Box<dyn Read + Send> = match source {
+        Source::File(path) => {
+            Box::new(std::fs::File::open(path).map_err(|e| file_error(path, e.kind()))?)
+        }
+        Source::Url(url) => Box::new(connect(url)?),
+    };
+    let mut buffered = BufReader::new(raw);
+    let compressed = buffered
+        .fill_buf()
+        .map_err(|e| read_error(source, e.kind(), false))?
+        .starts_with(&[0x1f, 0x8b]);
+    let decoded: Box<dyn Read + Send> = if compressed {
+        // Multi-member: some servers concatenate several gzip streams.
+        Box::new(flate2::read::MultiGzDecoder::new(buffered))
+    } else {
+        Box::new(buffered)
+    };
+    Ok(Opened {
+        reader: Box::new(BufReader::with_capacity(
+            64 * 1024,
+            Limited {
+                inner: decoded,
+                remaining: max_bytes,
+            },
+        )),
+        compressed,
     })
 }
 
-fn download(url: &str) -> Result<Vec<u8>, FetchError> {
+/// Fetches the whole source as text (for playlists; guides should stream).
+pub fn fetch_text(source: &Source) -> Result<String, FetchError> {
+    let mut opened = open(source, MAX_TEXT_BYTES)?;
+    let mut bytes = Vec::new();
+    opened
+        .reader
+        .read_to_end(&mut bytes)
+        .map_err(|e| read_error(source, e.kind(), opened.compressed))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Turns an I/O error that happened while reading `source` into a message
+/// that cannot leak the URL.
+pub fn read_error(source: &Source, kind: ErrorKind, compressed: bool) -> FetchError {
+    match kind {
+        ErrorKind::FileTooLarge => FetchError::TooLarge,
+        ErrorKind::TimedOut => FetchError::Timeout,
+        ErrorKind::InvalidData | ErrorKind::InvalidInput | ErrorKind::UnexpectedEof
+            if compressed =>
+        {
+            FetchError::Decompress
+        }
+        _ => match source {
+            Source::File(path) => file_error(path, kind),
+            Source::Url(_) => FetchError::Network,
+        },
+    }
+}
+
+fn file_error(path: &std::path::Path, kind: ErrorKind) -> FetchError {
+    FetchError::File(format!("cannot read {}: {kind}", path.display()))
+}
+
+fn connect(url: &str) -> Result<impl Read + Send + use<>, FetchError> {
     let config = ureq::Agent::config_builder()
-        .timeout_global(Some(TIMEOUT))
+        .timeout_connect(Some(CONNECT_TIMEOUT))
+        .timeout_recv_response(Some(RESPONSE_TIMEOUT))
+        .timeout_per_read(Some(READ_TIMEOUT))
         .user_agent(concat!("OpenZap/", env!("CARGO_PKG_VERSION")))
         .build();
     let agent = ureq::Agent::new_with_config(config);
-    let mut response = agent.get(url).call().map_err(map_http_error)?;
-    response
-        .body_mut()
-        .with_config()
-        .limit(MAX_BYTES)
-        .read_to_vec()
-        .map_err(map_http_error)
+    let response = agent.get(url).call().map_err(map_http_error)?;
+    // Unlimited here; `Limited` in `open` enforces the size.
+    Ok(response.into_body().into_reader())
 }
 
 /// Translates ureq errors into messages that cannot leak the URL.
@@ -103,38 +161,36 @@ fn map_http_error(err: ureq::Error) -> FetchError {
         ureq::Error::StatusCode(code) => FetchError::Status(code),
         ureq::Error::Timeout(_) => FetchError::Timeout,
         ureq::Error::HostNotFound => FetchError::HostNotFound,
-        ureq::Error::BodyExceedsLimit(_) => FetchError::TooLarge,
         _ => FetchError::Network,
     }
 }
 
-enum ReadError {
-    TooLarge,
-    Io(std::io::ErrorKind),
+/// Passes at most `remaining` bytes through, then fails if more would follow.
+struct Limited<R> {
+    inner: R,
+    remaining: u64,
 }
 
-/// Reads everything, failing if more than `MAX_BYTES` come out.
-fn read_limited(reader: impl Read) -> Result<Vec<u8>, ReadError> {
-    let mut buf = Vec::new();
-    // Read one byte past the limit to tell "exactly at limit" from "too big".
-    reader
-        .take(MAX_BYTES + 1)
-        .read_to_end(&mut buf)
-        .map_err(|e| ReadError::Io(e.kind()))?;
-    if buf.len() as u64 > MAX_BYTES {
-        return Err(ReadError::TooLarge);
+impl<R: Read> Read for Limited<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.remaining == 0 {
+            // At the limit: fine if the data ends exactly here.
+            let mut probe = [0u8; 1];
+            return match self.inner.read(&mut probe)? {
+                0 => Ok(0),
+                _ => Err(io::Error::new(
+                    ErrorKind::FileTooLarge,
+                    "data exceeds the size limit",
+                )),
+            };
+        }
+        let max = buf
+            .len()
+            .min(usize::try_from(self.remaining).unwrap_or(usize::MAX));
+        let n = self.inner.read(&mut buf[..max])?;
+        self.remaining -= n as u64;
+        Ok(n)
     }
-    Ok(buf)
-}
-
-fn gunzip_if_needed(bytes: Vec<u8>) -> Result<Vec<u8>, FetchError> {
-    if !bytes.starts_with(&[0x1f, 0x8b]) {
-        return Ok(bytes);
-    }
-    read_limited(flate2::read::GzDecoder::new(bytes.as_slice())).map_err(|e| match e {
-        ReadError::TooLarge => FetchError::TooLarge,
-        ReadError::Io(_) => FetchError::Decompress,
-    })
 }
 
 #[cfg(test)]
@@ -249,6 +305,56 @@ mod tests {
         let err = fetch_text(&Source::Url(url)).unwrap_err().to_string();
         assert!(!err.contains("fakekey123"), "leaked: {err}");
         assert!(!err.contains("127.0.0.1"), "leaked: {err}");
+    }
+
+    #[test]
+    fn limit_is_enforced_while_streaming() {
+        let path = temp_file("big.txt", &[b'x'; 100]);
+        let mut opened = open(&Source::File(path.clone()), 10).unwrap();
+        let mut out = Vec::new();
+        let err = opened.reader.read_to_end(&mut out).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::FileTooLarge);
+        assert_eq!(
+            read_error(&Source::File(path), err.kind(), false),
+            FetchError::TooLarge
+        );
+    }
+
+    #[test]
+    fn data_exactly_at_the_limit_is_fine() {
+        let path = temp_file("exact.txt", &[b'y'; 10]);
+        let mut opened = open(&Source::File(path), 10).unwrap();
+        let mut out = Vec::new();
+        opened.reader.read_to_end(&mut out).unwrap();
+        assert_eq!(out.len(), 10);
+    }
+
+    #[test]
+    fn limit_applies_to_decompressed_size() {
+        // 1 MB of zeros compresses to about 1 KB: a small download, a big result.
+        let path = temp_file("bomb.gz", &gzip(&vec![0u8; 1024 * 1024]));
+        let mut opened = open(&Source::File(path), 64 * 1024).unwrap();
+        assert!(opened.compressed);
+        let err = opened.reader.read_to_end(&mut Vec::new()).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::FileTooLarge);
+    }
+
+    #[test]
+    fn concatenated_gzip_members_are_all_read() {
+        let mut data = gzip(b"first,");
+        data.extend(gzip(b"second"));
+        let path = temp_file("multi.gz", &data);
+        assert_eq!(fetch_text(&Source::File(path)).unwrap(), "first,second");
+    }
+
+    #[test]
+    fn streams_over_http() {
+        let url = serve_once("200 OK", gzip(b"<tv></tv>"));
+        let mut opened = open(&Source::Url(url), 1024).unwrap();
+        let mut text = String::new();
+        opened.reader.read_to_string(&mut text).unwrap();
+        assert_eq!(text, "<tv></tv>");
+        assert!(opened.compressed);
     }
 
     #[test]

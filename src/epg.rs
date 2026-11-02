@@ -1,6 +1,8 @@
 //! Parser for XMLTV programme guides.
 
+use std::collections::HashSet;
 use std::fmt;
+use std::io::{BufRead, ErrorKind};
 
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
@@ -42,12 +44,16 @@ impl Epg {
 pub enum EpgError {
     /// The XML is malformed.
     Xml(String),
+    /// Reading the input failed (network, file, decompression, size limit).
+    /// Only the kind is kept: messages could contain a URL.
+    Io(ErrorKind),
 }
 
 impl fmt::Display for EpgError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             EpgError::Xml(msg) => write!(f, "invalid XMLTV: {msg}"),
+            EpgError::Io(kind) => write!(f, "read error: {kind}"),
         }
     }
 }
@@ -91,20 +97,77 @@ impl ProgrammeBuilder {
     }
 }
 
+/// Normalizes a channel id or name for matching: trimmed, lowercase.
+pub fn normalize_name(s: &str) -> String {
+    s.trim().to_lowercase()
+}
+
+/// Which EPG channels to keep, by normalized id or display name
+/// (see [`normalize_name`]).
+#[derive(Debug, Default, Clone)]
+pub struct ChannelFilter {
+    pub ids: HashSet<String>,
+    pub names: HashSet<String>,
+}
+
+impl ChannelFilter {
+    fn wants(&self, channel: &EpgChannel) -> bool {
+        self.ids.contains(&normalize_name(&channel.id))
+            || self.names.contains(&normalize_name(&channel.display_name))
+    }
+}
+
+/// What to keep while parsing. The default keeps everything.
+#[derive(Debug, Default, Clone)]
+pub struct EpgFilter {
+    /// Keep only programmes overlapping `(from, to)` (Unix seconds).
+    pub window: Option<(i64, i64)>,
+    /// Keep only these channels and their programmes.
+    pub channels: Option<ChannelFilter>,
+}
+
 /// Parses XMLTV text. Lenient: incomplete channels/programmes are skipped,
 /// only malformed XML is an error.
 pub fn parse(xml: &str) -> Result<Epg, EpgError> {
-    let mut reader = Reader::from_str(xml);
+    parse_reader(xml.as_bytes(), &EpgFilter::default())
+}
+
+/// Parses XMLTV from a stream, keeping only what `filter` asks for. Memory
+/// use is proportional to what is kept, not to the size of the input.
+///
+/// Channel filtering relies on `<channel>` elements coming before the
+/// programmes that refer to them (as XMLTV requires); a programme whose
+/// channel id matches a wanted id directly is kept regardless.
+pub fn parse_reader(input: impl BufRead, filter: &EpgFilter) -> Result<Epg, EpgError> {
+    let mut reader = Reader::from_reader(input);
+    let mut buf = Vec::new();
     let mut epg = Epg::default();
     let mut channel: Option<EpgChannel> = None;
     let mut programme: Option<ProgrammeBuilder> = None;
     let mut field: Option<Field> = None;
     let mut text = String::new();
+    // Normalized ids of the channels kept so far.
+    let mut kept_ids: HashSet<String> = HashSet::new();
+
+    let wanted_programme = |p: &ProgrammeBuilder, kept_ids: &HashSet<String>| {
+        let in_window = match (filter.window, p.start, p.stop) {
+            (Some((from, to)), Some(start), Some(stop)) => stop > from && start < to,
+            (Some(_), _, _) => false, // no valid times: useless anyway
+            (None, _, _) => true,
+        };
+        in_window
+            && filter.channels.as_ref().is_none_or(|f| {
+                let id = normalize_name(&p.channel);
+                kept_ids.contains(&id) || f.ids.contains(&id)
+            })
+    };
 
     loop {
-        let event = reader
-            .read_event()
-            .map_err(|e| EpgError::Xml(e.to_string()))?;
+        buf.clear();
+        let event = reader.read_event_into(&mut buf).map_err(|e| match e {
+            quick_xml::Error::Io(io) => EpgError::Io(io.kind()),
+            other => EpgError::Xml(other.to_string()),
+        })?;
         match event {
             Event::Start(e) => match e.local_name().as_ref() {
                 "channel" => {
@@ -115,12 +178,15 @@ pub fn parse(xml: &str) -> Result<Epg, EpgError> {
                     });
                 }
                 "programme" => {
-                    programme = Some(ProgrammeBuilder {
+                    let candidate = ProgrammeBuilder {
                         channel: attr(&e, "channel").unwrap_or_default(),
                         start: attr(&e, "start").as_deref().and_then(parse_time),
                         stop: attr(&e, "stop").as_deref().and_then(parse_time),
                         ..ProgrammeBuilder::default()
-                    });
+                    };
+                    // Unwanted programmes are dropped right away; their child
+                    // elements are then ignored because `programme` is None.
+                    programme = wanted_programme(&candidate, &kept_ids).then_some(candidate);
                 }
                 "display-name" if channel.is_some() => {
                     start_field(&mut field, &mut text, Field::DisplayName)
@@ -152,7 +218,11 @@ pub fn parse(xml: &str) -> Result<Epg, EpgError> {
                     field = None;
                 }
                 "channel" => {
-                    if let Some(ch) = channel.take().filter(|c| !c.id.is_empty()) {
+                    let keep = |c: &EpgChannel| {
+                        !c.id.is_empty() && filter.channels.as_ref().is_none_or(|f| f.wants(c))
+                    };
+                    if let Some(ch) = channel.take().filter(keep) {
+                        kept_ids.insert(normalize_name(&ch.id));
                         epg.channels.push(ch);
                     }
                 }
@@ -374,6 +444,84 @@ mod tests {
     #[test]
     fn empty_tv_is_ok() {
         assert_eq!(parse("<tv></tv>").unwrap(), Epg::default());
+    }
+
+    fn filtered(xml: &str, filter: &EpgFilter) -> Epg {
+        parse_reader(xml.as_bytes(), filter).unwrap()
+    }
+
+    #[test]
+    fn window_keeps_only_overlapping_programmes() {
+        // 12:00-13:00 and 13:00-14:00 UTC on 2024-02-29.
+        let xml = r#"<tv>
+            <programme start="20240229120000" stop="20240229130000" channel="a"><title>Noon</title></programme>
+            <programme start="20240229130000" stop="20240229140000" channel="a"><title>One</title></programme>
+        </tv>"#;
+        let at_1230 = 1_709_209_800;
+        let filter = EpgFilter {
+            window: Some((at_1230, at_1230 + 60)),
+            channels: None,
+        };
+        let titles: Vec<_> = filtered(xml, &filter)
+            .programmes
+            .into_iter()
+            .map(|p| p.title)
+            .collect();
+        assert_eq!(titles, ["Noon"]);
+    }
+
+    fn channels(ids: &[&str], names: &[&str]) -> ChannelFilter {
+        ChannelFilter {
+            ids: ids.iter().map(|s| normalize_name(s)).collect(),
+            names: names.iter().map(|s| normalize_name(s)).collect(),
+        }
+    }
+
+    #[test]
+    fn channel_filter_by_id_or_display_name() {
+        let filter = EpgFilter {
+            window: None,
+            channels: Some(channels(&["NEWS.EXAMPLE"], &["example film"])),
+        };
+        let epg = filtered(SAMPLE, &filter);
+        assert_eq!(epg.channels.len(), 2); // one by id, one by name
+        assert_eq!(epg.programmes.len(), 2);
+
+        let only_news = EpgFilter {
+            window: None,
+            channels: Some(channels(&["news.example"], &[])),
+        };
+        let epg = filtered(SAMPLE, &only_news);
+        assert_eq!(epg.channels.len(), 1);
+        assert_eq!(epg.programmes.len(), 1);
+        assert_eq!(epg.programmes[0].channel, "news.example");
+    }
+
+    #[test]
+    fn programme_with_wanted_id_is_kept_without_channel_element() {
+        let xml = r#"<tv><programme start="20240229120000" stop="20240229130000" channel="x"><title>T</title></programme></tv>"#;
+        let filter = EpgFilter {
+            window: None,
+            channels: Some(channels(&["x"], &[])),
+        };
+        assert_eq!(filtered(xml, &filter).programmes.len(), 1);
+    }
+
+    #[test]
+    fn read_errors_keep_only_the_kind() {
+        struct Failing;
+        impl std::io::Read for Failing {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    ErrorKind::TimedOut,
+                    "secret http://example.com/?token=x",
+                ))
+            }
+        }
+        let err =
+            parse_reader(std::io::BufReader::new(Failing), &EpgFilter::default()).unwrap_err();
+        assert_eq!(err, EpgError::Io(ErrorKind::TimedOut));
+        assert!(!err.to_string().contains("token"));
     }
 
     #[test]

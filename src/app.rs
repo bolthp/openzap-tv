@@ -149,7 +149,7 @@ impl App {
         let (tx, rx) = mpsc::channel();
         let (p, e, ctx) = (playlist_src.clone(), epg_src.clone(), ctx.clone());
         std::thread::spawn(move || {
-            let loaded = loader::load_sources(&p, &e);
+            let loaded = loader::load_sources(&p, &e, unix_now());
             // The receiver is gone if the app was closed meanwhile; that's fine.
             let _ = tx.send(loaded);
             ctx.request_repaint(); // wake the UI to pick up the result
