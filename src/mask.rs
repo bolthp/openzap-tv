@@ -15,6 +15,11 @@ const SENSITIVE_KEYS: &[&str] = &[
     "secret",
     "sig",
     "signature",
+    // Per-request signatures (e.g. HLS segment URLs `?md5=...&expires=...`).
+    "md5",
+    "hash",
+    "hmac",
+    "sign",
 ];
 
 /// Path segments that are followed by `<username>/<password>` in Xtream
@@ -167,6 +172,14 @@ mod tests {
         assert_eq!(
             mask_url("http://example.com/a?Password=x&USERNAME=y"),
             "http://example.com/a?Password=***&USERNAME=***"
+        );
+    }
+
+    #[test]
+    fn masks_segment_signatures() {
+        assert_eq!(
+            mask_url("http://example.com/iptv/1/1793631119000.ts?md5=abcDEF123_-x&expires=1"),
+            "http://example.com/iptv/1/1793631119000.ts?md5=***&expires=1"
         );
     }
 

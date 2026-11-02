@@ -487,6 +487,7 @@ impl App {
     fn apply_event(&mut self, ev: PlayerEvent) {
         match ev {
             PlayerEvent::Loading => {
+                self.video.clear();
                 self.stream = StreamState::Opening;
                 self.status = "Loading...".into();
             }
@@ -1136,6 +1137,7 @@ mod tests {
 
         app.apply_event(PlayerEvent::Loading);
         assert_eq!(app.stream, StreamState::Opening);
+        assert!(app.video.is_clear_pending(), "old picture must be blanked");
         app.apply_event(PlayerEvent::Started);
         assert_eq!(app.stream, StreamState::Playing);
 

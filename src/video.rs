@@ -35,6 +35,9 @@ struct State {
     target: Option<Target>,
     /// The target was (re)created and holds no frame yet.
     needs_render: bool,
+    /// Blank the target on the next draw (a new stream is opening, so the
+    /// previous channel's last frame must not stay on screen).
+    clear_pending: bool,
     /// Last GL error from setting up the target, reported once.
     error: Option<String>,
     /// Present only when diagnostics are enabled (`--debug`).
@@ -83,6 +86,16 @@ impl VideoView {
             .as_mut()
             .map(|d| std::mem::take(&mut d.reports))
             .unwrap_or_default()
+    }
+
+    /// Blanks the picture until the next frame arrives.
+    pub fn clear(&self) {
+        self.lock().clear_pending = true;
+    }
+
+    #[cfg(test)]
+    pub fn is_clear_pending(&self) -> bool {
+        self.lock().clear_pending
     }
 
     pub fn is_attached(&self) -> bool {
@@ -160,6 +173,13 @@ impl State {
             let (Some(render), Some(target)) = (&self.render, &self.target) else {
                 return;
             };
+
+            if std::mem::take(&mut self.clear_pending) {
+                gl.disable(glow::SCISSOR_TEST);
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(target.fbo));
+                gl.clear_color(0.0, 0.0, 0.0, 1.0);
+                gl.clear(glow::COLOR_BUFFER_BIT);
+            }
 
             if render.update() || self.needs_render {
                 // mpv expects default GL state; egui_glow re-applies its own
