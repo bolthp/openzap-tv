@@ -5,4 +5,5 @@ edition = "2024"
 license = "GPL-3.0-or-later"
 
 [dependencies]
+eframe = "0.37.0"
 quick-xml = "0.42.0"
