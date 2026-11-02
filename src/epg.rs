@@ -10,8 +10,18 @@ use quick_xml::{Reader, XmlVersion};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EpgChannel {
     pub id: String,
-    pub display_name: String,
+    /// All `display-name`s in file order, without duplicates; the first is
+    /// the main one. Guides often list variants ("Arena Sport 1 HD RS",
+    /// "Arena Sport 1 RS"), and playlists use any of them.
+    pub display_names: Vec<String>,
     pub icon: Option<String>,
+}
+
+impl EpgChannel {
+    /// The main display name ("" if there is none).
+    pub fn display_name(&self) -> &str {
+        self.display_names.first().map_or("", String::as_str)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,9 +107,14 @@ impl ProgrammeBuilder {
     }
 }
 
-/// Normalizes a channel id or name for matching: trimmed, lowercase.
+/// Normalizes a channel id or name for matching: lowercase, runs of
+/// whitespace collapsed to one space, "ё" read as "е".
 pub fn normalize_name(s: &str) -> String {
-    s.trim().to_lowercase()
+    s.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+        .replace('ё', "е")
 }
 
 /// Which EPG channels to keep, by normalized id or display name
@@ -113,7 +128,10 @@ pub struct ChannelFilter {
 impl ChannelFilter {
     fn wants(&self, channel: &EpgChannel) -> bool {
         self.ids.contains(&normalize_name(&channel.id))
-            || self.names.contains(&normalize_name(&channel.display_name))
+            || channel
+                .display_names
+                .iter()
+                .any(|n| self.names.contains(&normalize_name(n)))
     }
 }
 
@@ -173,7 +191,7 @@ pub fn parse_reader(input: impl BufRead, filter: &EpgFilter) -> Result<Epg, EpgE
                 "channel" => {
                     channel = Some(EpgChannel {
                         id: attr(&e, "id").unwrap_or_default(),
-                        display_name: String::new(),
+                        display_names: Vec::new(),
                         icon: None,
                     });
                 }
@@ -245,8 +263,9 @@ fn start_field(field: &mut Option<Field>, text: &mut String, which: Field) {
     text.clear();
 }
 
-/// Stores the first non-empty value of each field; later duplicates
-/// (e.g. translated titles) are ignored.
+/// Stores the first non-empty value of each programme field; later
+/// duplicates (e.g. translated titles) are ignored. Channels keep every
+/// display name.
 fn store_field(
     field: Option<Field>,
     value: String,
@@ -254,8 +273,10 @@ fn store_field(
     programme: &mut Option<ProgrammeBuilder>,
 ) {
     match (field, channel.as_mut(), programme.as_mut()) {
-        (Some(Field::DisplayName), Some(ch), _) if ch.display_name.is_empty() => {
-            ch.display_name = value;
+        (Some(Field::DisplayName), Some(ch), _) => {
+            if !ch.display_names.contains(&value) {
+                ch.display_names.push(value);
+            }
         }
         (Some(Field::Title), _, Some(p)) => {
             p.title.get_or_insert(value);
@@ -373,12 +394,47 @@ mod tests {
         let epg = parse(SAMPLE).unwrap();
         assert_eq!(epg.channels.len(), 2);
         assert_eq!(epg.channels[0].id, "news.example");
-        assert_eq!(epg.channels[0].display_name, "Example News");
+        assert_eq!(epg.channels[0].display_name(), "Example News");
+        assert_eq!(epg.channels[0].display_names, ["Example News", "News HD"]);
         assert_eq!(
             epg.channels[0].icon.as_deref(),
             Some("http://example.com/news.png")
         );
         assert_eq!(epg.channels[1].icon, None);
+    }
+
+    #[test]
+    fn duplicate_display_names_are_kept_once() {
+        let xml = r#"<tv><channel id="a"><display-name>A</display-name>
+            <display-name>A</display-name><display-name>A HD</display-name></channel></tv>"#;
+        assert_eq!(parse(xml).unwrap().channels[0].display_names, ["A", "A HD"]);
+        let empty = EpgChannel {
+            id: "x".into(),
+            display_names: vec![],
+            icon: None,
+        };
+        assert_eq!(empty.display_name(), "");
+    }
+
+    #[test]
+    fn filter_matches_any_display_name() {
+        let filter = EpgFilter {
+            window: None,
+            channels: Some(channels(&[], &["news hd"])),
+        };
+        let epg = parse_reader(SAMPLE.as_bytes(), &filter).unwrap();
+        assert_eq!(epg.channels.len(), 1);
+        assert_eq!(epg.channels[0].id, "news.example");
+        assert_eq!(epg.programmes.len(), 1, "its programmes are kept too");
+    }
+
+    #[test]
+    fn names_normalize_case_spaces_and_yo() {
+        assert_eq!(normalize_name("  Ёлки  ТВ\tHD "), "елки тв hd");
+        assert_eq!(
+            normalize_name("Первый Канал"),
+            normalize_name("первый канал")
+        );
     }
 
     #[test]

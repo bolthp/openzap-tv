@@ -37,14 +37,27 @@ impl GuideIndex {
     /// Matches playlist channels to EPG channels.
     ///
     /// Order: `tvg-id` == EPG id, then `tvg-name`, then the channel name
-    /// against EPG display names. Comparisons are case-insensitive; when
-    /// several EPG channels share an id or name, the first one wins.
+    /// against all EPG display names (see `normalize_name`). When several
+    /// EPG channels share an id or name, a main display name beats a
+    /// variant, then the first channel wins.
     pub fn build(playlist: &Playlist, epg: &Epg) -> Self {
         let mut by_id: HashMap<String, &str> = HashMap::new();
         let mut by_name: HashMap<String, &str> = HashMap::new();
         for c in &epg.channels {
             by_id.entry(norm(&c.id)).or_insert(&c.id);
-            by_name.entry(norm(&c.display_name)).or_insert(&c.id);
+        }
+        // Main names first, so a channel's own main name wins over the same
+        // name listed as a variant of another channel.
+        let main = epg
+            .channels
+            .iter()
+            .filter_map(|c| Some((c, c.display_names.first()?)));
+        let variants = epg
+            .channels
+            .iter()
+            .flat_map(|c| c.display_names.iter().skip(1).map(move |n| (c, n)));
+        for (c, name) in main.chain(variants) {
+            by_name.entry(norm(name)).or_insert(&c.id);
         }
 
         let epg_ids: Vec<Option<String>> = playlist
@@ -154,7 +167,7 @@ mod tests {
     fn epg_channel(id: &str, name: &str) -> EpgChannel {
         EpgChannel {
             id: id.into(),
-            display_name: name.into(),
+            display_names: vec![name.into()],
             icon: None,
         }
     }
@@ -236,6 +249,26 @@ mod tests {
         assert_eq!(idx.logo(2), None);
         assert_eq!(idx.logo(3), None);
         assert_eq!(idx.logo(99), None);
+    }
+
+    #[test]
+    fn matches_any_display_name_main_name_first() {
+        let mut epg = sample_epg();
+        epg.channels[0].display_names.push("Example News HD".into());
+        epg.channels[1].display_names.push("Example News".into()); // a variant
+        let playlist = Playlist {
+            channels: vec![
+                channel("example news hd", None),
+                channel("Example News", None),
+                channel("Example  Film", None), // double space
+            ],
+        };
+        let idx = GuideIndex::build(&playlist, &epg);
+        assert_eq!(idx.epg_id(0), Some("news.example"));
+        // "Example News" is news.example's main name and film.example's
+        // variant: the main name wins.
+        assert_eq!(idx.epg_id(1), Some("news.example"));
+        assert_eq!(idx.epg_id(2), Some("film.example"));
     }
 
     #[test]

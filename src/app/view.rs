@@ -11,6 +11,7 @@ use openzap::player::AspectMode;
 use openzap::streaminfo::StreamInfo;
 
 use super::logo::paint_logo;
+use super::palette;
 use super::{Action, App, StreamState, VOLUME_STEP, draw_label, overlay_text};
 
 /// How long the bar stays after the mouse stops moving, seconds.
@@ -241,7 +242,7 @@ impl App {
         child.set_clip_rect(video.intersect(ui.clip_rect()));
         // Always dark: the bar sits on top of the picture. (`visuals_mut`
         // changes only this Ui; `set_visuals` would change the whole app.)
-        *child.visuals_mut() = egui::Visuals::dark();
+        *child.visuals_mut() = palette::dark_visuals(ui.ctx());
         self.refresh_tracks(time);
         self.bar_guide(&mut child, now);
         child.add_space(8.0);
@@ -251,6 +252,7 @@ impl App {
 
     /// Channel name and the programme guide for it.
     fn bar_guide(&self, ui: &mut egui::Ui, now: i64) {
+        let colors = palette::palette(ui.visuals());
         let current = self.playing.or(self.selected);
         let Some((idx, channel)) =
             current.and_then(|i| self.playlist.channels.get(i).map(|c| (i, c)))
@@ -273,7 +275,7 @@ impl App {
             }
             ui.label(egui::RichText::new(&channel.name).heading().strong());
             if let Some(group) = &channel.group_title {
-                ui.weak(group);
+                ui.colored_label(colors.secondary, group);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(egui::RichText::new(clock::local_hm(now)).heading());
@@ -289,14 +291,12 @@ impl App {
             return;
         };
         ui.horizontal(|ui| {
-            ui.weak(format!(
-                "{}–{}",
-                clock::local_hm(p.start),
-                clock::local_hm(p.stop)
-            ));
+            let span = format!("{}–{}", clock::local_hm(p.start), clock::local_hm(p.stop));
+            ui.colored_label(colors.time, span);
             ui.strong(&p.title);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.weak(format!("ends in {}", format_duration(p.stop - now)));
+                let left = format!("ends in {}", format_duration(p.stop - now));
+                ui.colored_label(colors.secondary, left);
             });
         });
         let (line, _) =
@@ -305,14 +305,14 @@ impl App {
         painter.rect_filled(line, 2.0, egui::Color32::from_white_alpha(40));
         let mut done = line;
         done.set_width(line.width() * progress(p, now));
-        painter.rect_filled(done, 2.0, ui.visuals().selection.bg_fill);
+        painter.rect_filled(done, 2.0, colors.time);
 
         if let Some(desc) = &p.desc {
             let mut job = egui::text::LayoutJob::single_section(
                 desc.clone(),
                 egui::TextFormat::simple(
                     egui::TextStyle::Body.resolve(ui.style()),
-                    ui.visuals().weak_text_color(),
+                    colors.secondary,
                 ),
             );
             job.wrap = egui::text::TextWrapping {
@@ -324,12 +324,12 @@ impl App {
             ui.label(job);
         }
         if let Some(next) = nn.next {
-            ui.weak(format!(
-                "{}  {}  (in {})",
-                clock::local_hm(next.start),
-                next.title,
-                format_duration(next.start - now)
-            ));
+            ui.horizontal(|ui| {
+                ui.colored_label(colors.time, clock::local_hm(next.start));
+                ui.colored_label(colors.secondary, &next.title);
+                let wait = format!("(in {})", format_duration(next.start - now));
+                ui.colored_label(colors.secondary.gamma_multiply(0.8), wait);
+            });
         }
     }
 

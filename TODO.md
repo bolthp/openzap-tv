@@ -36,8 +36,6 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
 ## Programme guide
 
 - [ ] Day schedule for a channel, not only now/next.
-- [ ] Match all `display-name` variants of EPG channels (about half of the test
-      playlist's channels currently find no EPG).
 - [ ] Refresh the guide automatically (daily); data is kept for 4 days ahead.
 
 ## Interface

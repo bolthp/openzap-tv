@@ -3,6 +3,7 @@
 
 mod list;
 mod logo;
+mod palette;
 mod view;
 
 use std::path::PathBuf;
@@ -450,6 +451,7 @@ impl App {
     }
 
     pub fn set_context(&mut self, ctx: egui::Context) {
+        palette::install(&ctx);
         self.logos = Some(Logos::new(&ctx));
         self.ctx = ctx;
     }
@@ -1006,7 +1008,7 @@ pub fn demo_data(now: i64) -> (Playlist, Epg) {
         });
         epg.channels.push(EpgChannel {
             id: id.into(),
-            display_name: name.into(),
+            display_names: vec![name.into()],
             icon: None,
         });
         for (i, title) in ["Morning", "Midday", "Evening"].into_iter().enumerate() {

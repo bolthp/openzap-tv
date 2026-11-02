@@ -9,6 +9,7 @@ use openzap::clock;
 use openzap::config::Side;
 
 use super::logo::paint_logo;
+use super::palette::palette;
 use super::{Action, App};
 
 /// Width of the list when it slides in over the video.
@@ -258,22 +259,19 @@ impl App {
         let visuals = ui.visuals();
         let selected = self.selected == Some(idx);
         let playing = self.playing == Some(idx);
-        let (fill, text, weak) = if selected {
+        let colors = palette(visuals);
+        // (row fill, name, programme title, time span)
+        let (fill, text, weak, time) = if selected {
             let c = visuals.selection.stroke.color;
-            (visuals.selection.bg_fill, c, c.gamma_multiply(0.75))
-        } else if response.hovered() {
-            let w = &visuals.widgets.hovered;
-            (
-                w.weak_bg_fill,
-                visuals.text_color(),
-                visuals.weak_text_color(),
-            )
+            let dim = c.gamma_multiply(0.85);
+            (visuals.selection.bg_fill, c, dim, dim)
         } else {
-            (
-                egui::Color32::TRANSPARENT,
-                visuals.text_color(),
-                visuals.weak_text_color(),
-            )
+            let fill = if response.hovered() {
+                visuals.widgets.hovered.weak_bg_fill
+            } else {
+                egui::Color32::TRANSPARENT
+            };
+            (fill, colors.primary, colors.secondary, colors.time)
         };
         let painter = ui.painter();
         painter.rect_filled(rect, 4.0, fill);
@@ -313,11 +311,11 @@ impl App {
         if let Some(p) = self.guide.now_next(&self.epg, idx, now).now {
             // Programme title on the left, its time span on the right.
             let span = format!("{}–{}", clock::local_hm(p.start), clock::local_hm(p.stop));
-            let span = painter.layout_no_wrap(span, small.clone(), weak);
+            let span = painter.layout_no_wrap(span, small.clone(), time);
             let title_width = inner.width() - span.size().x - 8.0;
             let title = elided(painter, &p.title, small, weak, title_width);
             let y = inner.bottom() - 4.0 - title.size().y;
-            painter.galley(egui::pos2(inner.right() - span.size().x, y), span, weak);
+            painter.galley(egui::pos2(inner.right() - span.size().x, y), span, time);
             painter.galley(egui::pos2(inner.left(), y), title, weak);
             let line_y = inner.bottom();
             let end = inner.left() + inner.width() * progress(p, now);
@@ -326,11 +324,11 @@ impl App {
                     egui::pos2(inner.left(), line_y),
                     egui::pos2(inner.right(), line_y),
                 ],
-                egui::Stroke::new(2.0, weak.gamma_multiply(0.25)),
+                egui::Stroke::new(2.0, weak.gamma_multiply(0.2)),
             );
             painter.line_segment(
                 [egui::pos2(inner.left(), line_y), egui::pos2(end, line_y)],
-                egui::Stroke::new(2.0, weak),
+                egui::Stroke::new(2.0, time),
             );
         }
         response
