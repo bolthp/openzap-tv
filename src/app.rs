@@ -8,6 +8,7 @@ use openzap::epg::{self, Epg, EpgChannel, Programme};
 use openzap::guide::now_next_for;
 use openzap::m3u::{self, Channel, Playlist};
 use openzap::mask::mask_url;
+use openzap::player::{Player, PlayerEvent};
 
 pub struct App {
     playlist: Playlist,
@@ -20,6 +21,15 @@ pub struct App {
     selected: Option<usize>,
     /// Load problems, shown in the UI.
     notices: Vec<String>,
+    /// `None` if libmpv could not be initialized (reason is in `notices`).
+    player: Option<Player>,
+    playing: Option<usize>,
+    status: String,
+    volume: f64,
+    // UI actions are recorded while drawing and applied afterwards.
+    pending_play: Option<usize>,
+    pending_stop: bool,
+    pending_volume: bool,
 }
 
 impl App {
@@ -38,7 +48,12 @@ impl App {
                 (playlist, epg)
             }
         };
-        Self::new(playlist, epg, notices)
+        let mut app = Self::new(playlist, epg, notices);
+        match Player::new() {
+            Ok(player) => app.player = Some(player),
+            Err(e) => app.notices.push(format!("Playback unavailable: {e}")),
+        }
+        app
     }
 
     fn new(playlist: Playlist, epg: Epg, notices: Vec<String>) -> Self {
@@ -53,6 +68,70 @@ impl App {
             group: None,
             selected: None,
             notices,
+            player: None,
+            playing: None,
+            status: String::new(),
+            volume: 80.0,
+            pending_play: None,
+            pending_stop: false,
+            pending_volume: false,
+        }
+    }
+
+    fn play(&mut self, idx: usize) {
+        let Some(channel) = self.playlist.channels.get(idx) else {
+            return;
+        };
+        let result = self.player.as_ref().map(|p| p.load(&channel.url));
+        match result {
+            Some(Ok(())) => {
+                self.playing = Some(idx);
+                self.status = "Loading...".into();
+                self.apply_volume();
+            }
+            Some(Err(e)) => self.status = format!("Cannot start playback: {e}"),
+            None => self.status = "Playback unavailable".into(),
+        }
+    }
+
+    fn stop(&mut self) {
+        if let Some(Err(e)) = self.player.as_ref().map(Player::stop) {
+            self.status = format!("Cannot stop: {e}");
+            return;
+        }
+        self.playing = None;
+        self.status = "Stopped".into();
+    }
+
+    fn apply_volume(&mut self) {
+        if let Some(Err(e)) = self.player.as_ref().map(|p| p.set_volume(self.volume)) {
+            self.status = format!("Cannot set volume: {e}");
+        }
+    }
+
+    fn poll_player(&mut self) {
+        let mut events = Vec::new();
+        if let Some(player) = &self.player {
+            while let Some(ev) = player.poll() {
+                events.push(ev);
+            }
+        }
+        for ev in events {
+            self.apply_event(ev);
+        }
+    }
+
+    fn apply_event(&mut self, ev: PlayerEvent) {
+        match ev {
+            PlayerEvent::Loading => self.status = "Loading...".into(),
+            PlayerEvent::Started => self.status = "Playing".into(),
+            // Also fired when a new channel replaces the old one, so `playing`
+            // is left alone; it is cleared by `stop` and by failures.
+            PlayerEvent::Ended => self.status = "Stopped".into(),
+            PlayerEvent::Failed(msg) => {
+                self.playing = None;
+                self.status = format!("Playback failed: {msg}");
+            }
         }
     }
 
@@ -90,22 +169,26 @@ impl App {
         egui::ScrollArea::vertical().show_rows(ui, row_height, self.visible.len(), |ui, range| {
             for &idx in &self.visible[range] {
                 let name = &self.playlist.channels[idx].name;
-                if ui
-                    .selectable_label(self.selected == Some(idx), name)
-                    .clicked()
-                {
+                let response = ui.selectable_label(self.selected == Some(idx), name);
+                if response.clicked() {
                     self.selected = Some(idx);
+                }
+                if response.double_clicked() {
+                    self.pending_play = Some(idx);
                 }
             }
         });
     }
 
-    fn details(&self, ui: &mut egui::Ui, now: i64) {
+    fn details(&mut self, ui: &mut egui::Ui, now: i64) {
         for notice in &self.notices {
             ui.colored_label(egui::Color32::LIGHT_RED, notice);
         }
-        let Some(channel) = self.selected.and_then(|i| self.playlist.channels.get(i)) else {
+        let Some(selected) = self.selected else {
             ui.label("Select a channel on the left.");
+            return;
+        };
+        let Some(channel) = self.playlist.channels.get(selected) else {
             return;
         };
 
@@ -115,6 +198,29 @@ impl App {
         }
         // Never show the raw URL: it may contain an access key.
         ui.monospace(mask_url(&channel.url));
+
+        ui.horizontal(|ui| {
+            if ui.button("Play").clicked() {
+                self.pending_play = Some(selected);
+            }
+            if ui.button("Stop").clicked() {
+                self.pending_stop = true;
+            }
+            if ui
+                .add(egui::Slider::new(&mut self.volume, 0.0..=100.0).text("Volume"))
+                .changed()
+            {
+                self.pending_volume = true;
+            }
+        });
+        if !self.status.is_empty() {
+            let marker = if self.playing == Some(selected) {
+                "* "
+            } else {
+                ""
+            };
+            ui.label(format!("{marker}{}", self.status));
+        }
         ui.separator();
 
         let nn = now_next_for(channel, &self.epg, now);
@@ -147,12 +253,24 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let now = unix_now();
+        self.poll_player();
         egui::Panel::left("channels")
             .default_size(320.0)
             .show(ui, |ui| self.channel_list(ui));
         egui::CentralPanel::default().show(ui, |ui| self.details(ui, now));
-        // Keep "ends in ..." fresh without burning CPU.
-        ui.ctx().request_repaint_after(Duration::from_secs(15));
+        if let Some(idx) = self.pending_play.take() {
+            self.play(idx);
+        }
+        if std::mem::take(&mut self.pending_stop) {
+            self.stop();
+        }
+        if std::mem::take(&mut self.pending_volume) {
+            self.apply_volume();
+        }
+        // Poll player events often while playing; otherwise just keep
+        // "ends in ..." fresh without burning CPU.
+        let delay = if self.playing.is_some() { 250 } else { 15_000 };
+        ui.ctx().request_repaint_after(Duration::from_millis(delay));
     }
 }
 
@@ -235,6 +353,30 @@ mod tests {
             assert!(nn.now.is_some(), "{} has no current programme", ch.name);
             assert!(nn.next.is_some(), "{} has no next programme", ch.name);
         }
+    }
+
+    #[test]
+    fn events_update_status() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+        app.playing = Some(0);
+
+        app.apply_event(PlayerEvent::Started);
+        assert_eq!(app.status, "Playing");
+        assert_eq!(app.playing, Some(0));
+
+        app.apply_event(PlayerEvent::Failed("loading failed".into()));
+        assert_eq!(app.status, "Playback failed: loading failed");
+        assert_eq!(app.playing, None);
+    }
+
+    #[test]
+    fn play_without_player_reports_status() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+        app.play(0);
+        assert_eq!(app.status, "Playback unavailable");
+        assert_eq!(app.playing, None);
     }
 
     #[test]

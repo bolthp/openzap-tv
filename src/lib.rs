@@ -5,3 +5,4 @@ pub mod epg;
 pub mod guide;
 pub mod m3u;
 pub mod mask;
+pub mod player;
