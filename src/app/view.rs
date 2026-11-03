@@ -151,6 +151,7 @@ impl App {
         if shown > 0.0 {
             self.bottom_bar(ui, rect, shown, now, time);
         }
+        self.lift_subtitles(self.bar.height * shown / rect.height().max(1.0));
         if let Some(secs) = self.bar.remaining(time) {
             ui.ctx()
                 .request_repaint_after(Duration::from_secs_f64(secs.max(0.05)));
@@ -358,7 +359,12 @@ impl App {
     fn bar_controls(&mut self, ui: &mut egui::Ui) {
         // Rough widths of the two groups; below that the view group wraps
         // onto its own row (e.g. when the guide panel narrows the bar).
-        let audio = if self.tracks.len() > 1 { 200.0 } else { 0.0 };
+        let audio = if self.tracks.len() > 1 { 200.0 } else { 0.0 }
+            + if self.subtitles.is_empty() {
+                0.0
+            } else {
+                170.0
+            };
         let one_row = ui.available_width() >= 340.0 + 330.0 + audio;
         let right_to_left = egui::Layout::right_to_left(egui::Align::Center);
         if one_row {
@@ -488,6 +494,30 @@ impl App {
             })
             .response
             .on_hover_text("Picture size (Z)");
+        if !self.subtitles.is_empty() {
+            let current = self
+                .subtitles
+                .iter()
+                .find(|t| t.selected)
+                .map_or_else(|| "Subtitles off".to_string(), |t| t.label());
+            egui::ComboBox::from_id_salt("subtitles")
+                .selected_text(format!("CC {current}"))
+                .width(150.0)
+                .truncate()
+                .show_ui(ui, |ui| {
+                    let none = !self.subtitles.iter().any(|t| t.selected);
+                    if ui.selectable_label(none, "Off").clicked() {
+                        self.actions.push(Action::SetSubtitle(None));
+                    }
+                    for t in &self.subtitles {
+                        if ui.selectable_label(t.selected, t.label()).clicked() {
+                            self.actions.push(Action::SetSubtitle(Some(t.id)));
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("Subtitles (S)");
+        }
         if self.tracks.len() > 1 {
             let current = self
                 .tracks

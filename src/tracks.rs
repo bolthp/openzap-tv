@@ -1,4 +1,4 @@
-//! Audio tracks of the playing stream, read from mpv's `track-list`.
+//! Audio and subtitle tracks of the playing stream, from mpv's `track-list`.
 
 use crate::streaminfo::{channels_label, codec_label};
 
@@ -6,8 +6,8 @@ use crate::streaminfo::{channels_label, codec_label};
 const MAX_TRACKS: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AudioTrack {
-    /// mpv's track id (the value for the `aid` property).
+pub struct Track {
+    /// mpv's track id (the value for the `aid` / `sid` property).
     pub id: i64,
     pub lang: Option<String>,
     pub title: Option<String>,
@@ -16,7 +16,7 @@ pub struct AudioTrack {
     pub selected: bool,
 }
 
-impl AudioTrack {
+impl Track {
     /// E.g. "English · AC-3 5.1", or "Track 2 · AAC stereo".
     pub fn label(&self) -> String {
         let name = match (&self.title, &self.lang) {
@@ -41,7 +41,17 @@ impl AudioTrack {
 
 /// The audio tracks, given a property lookup (`get(name)` returns mpv's
 /// text value, or `None` when unavailable).
-pub fn audio_tracks(get: impl Fn(&str) -> Option<String>) -> Vec<AudioTrack> {
+pub fn audio_tracks(get: impl Fn(&str) -> Option<String>) -> Vec<Track> {
+    tracks_of("audio", get)
+}
+
+/// The subtitle tracks (same lookup as [`audio_tracks`]).
+pub fn subtitle_tracks(get: impl Fn(&str) -> Option<String>) -> Vec<Track> {
+    tracks_of("sub", get)
+}
+
+/// Tracks of mpv type `kind` ("audio", "sub", "video").
+fn tracks_of(kind: &str, get: impl Fn(&str) -> Option<String>) -> Vec<Track> {
     let count = get("track-list/count")
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(0)
@@ -51,10 +61,10 @@ pub fn audio_tracks(get: impl Fn(&str) -> Option<String>) -> Vec<AudioTrack> {
             let field = |name: &str| {
                 get(&format!("track-list/{i}/{name}")).filter(|v| !v.trim().is_empty())
             };
-            if field("type")? != "audio" {
+            if field("type")? != kind {
                 return None;
             }
-            Some(AudioTrack {
+            Some(Track {
                 id: field("id")?.parse().ok()?,
                 lang: field("lang"),
                 title: field("title"),
@@ -68,12 +78,21 @@ pub fn audio_tracks(get: impl Fn(&str) -> Option<String>) -> Vec<AudioTrack> {
 
 /// The track after the selected one, wrapping around; `None` if there is
 /// nothing to switch to.
-pub fn next_track(tracks: &[AudioTrack]) -> Option<&AudioTrack> {
+pub fn next_track(tracks: &[Track]) -> Option<&Track> {
     if tracks.len() < 2 {
         return None;
     }
     let current = tracks.iter().position(|t| t.selected).unwrap_or(0);
     tracks.get((current + 1) % tracks.len())
+}
+
+/// The subtitle after the selected one, with "off" (`None`) in the cycle:
+/// off → first → … → last → off.
+pub fn next_subtitle(tracks: &[Track]) -> Option<i64> {
+    match tracks.iter().position(|t| t.selected) {
+        None => tracks.first().map(|t| t.id),
+        Some(i) => tracks.get(i + 1).map(|t| t.id),
+    }
 }
 
 /// Readable names for common language codes; others are shown as given.
@@ -101,12 +120,17 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    fn tracks(pairs: &[(&str, &str)]) -> Vec<AudioTrack> {
+    fn tracks(pairs: &[(&str, &str)]) -> Vec<Track> {
         let map: HashMap<&str, &str> = pairs.iter().copied().collect();
         audio_tracks(|name| map.get(name).map(|v| v.to_string()))
     }
 
-    fn two_audio() -> Vec<AudioTrack> {
+    fn subs(pairs: &[(&str, &str)]) -> Vec<Track> {
+        let map: HashMap<&str, &str> = pairs.iter().copied().collect();
+        subtitle_tracks(|name| map.get(name).map(|v| v.to_string()))
+    }
+
+    fn two_audio() -> Vec<Track> {
         tracks(&[
             ("track-list/count", "3"),
             ("track-list/0/type", "video"),
@@ -173,6 +197,33 @@ mod tests {
         swapped[1].selected = true;
         assert_eq!(next_track(&swapped).map(|t| t.id), Some(1));
         assert_eq!(next_track(&t[..1]), None);
+    }
+
+    #[test]
+    fn subtitles_are_read_and_cycle_through_off() {
+        let subs = subs(&[
+            ("track-list/count", "3"),
+            ("track-list/0/type", "audio"),
+            ("track-list/0/id", "1"),
+            ("track-list/1/type", "sub"),
+            ("track-list/1/id", "1"),
+            ("track-list/1/lang", "eng"),
+            ("track-list/1/codec", "subrip"),
+            ("track-list/2/type", "sub"),
+            ("track-list/2/id", "2"),
+            ("track-list/2/codec", "dvb_subtitle"),
+            ("track-list/2/selected", "yes"),
+        ]);
+        let map: Vec<i64> = subs.iter().map(|t| t.id).collect();
+        assert_eq!(map, [1, 2]);
+        assert_eq!(subs[0].label(), "English · SRT");
+        assert_eq!(subs[1].label(), "Track 2 · DVB");
+        // 2 is selected: next is off; from off the first comes back.
+        assert_eq!(next_subtitle(&subs), None);
+        let mut off = subs.clone();
+        off[1].selected = false;
+        assert_eq!(next_subtitle(&off), Some(1));
+        assert_eq!(next_subtitle(&[]), None);
     }
 
     #[test]

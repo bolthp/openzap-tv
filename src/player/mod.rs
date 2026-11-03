@@ -396,6 +396,19 @@ impl Player {
         self.set_property("aid", &id.to_string())
     }
 
+    /// Shows the subtitle track with mpv's track `id`, or none
+    /// (see [`crate::tracks::subtitle_tracks`]).
+    pub fn set_subtitle_track(&self, id: Option<i64>) -> Result<(), PlayerError> {
+        let value = id.map_or_else(|| "no".to_string(), |id| id.to_string());
+        self.set_property("sid", &value)
+    }
+
+    /// Vertical subtitle position in percent of the picture height
+    /// (100 = mpv's default, at the bottom).
+    pub fn set_subtitle_position(&self, percent: u32) -> Result<(), PlayerError> {
+        self.set_property("sub-pos", &percent.min(150).to_string())
+    }
+
     /// Volume in percent (0–130).
     pub fn set_volume(&self, percent: f64) -> Result<(), PlayerError> {
         self.set_property("volume", &percent.clamp(0.0, 130.0).to_string())
@@ -628,6 +641,16 @@ mod tests {
         assert_eq!(p.get_property("keepaspect").as_deref(), Some("no"));
         p.set_aspect(AspectMode::Auto).unwrap();
         assert_eq!(p.get_property("keepaspect").as_deref(), Some("yes"));
+    }
+
+    #[test]
+    fn subtitles_can_be_turned_off_without_a_file() {
+        require_mpv!();
+        let p = headless();
+        assert_eq!(p.set_subtitle_track(None), Ok(()));
+        assert_eq!(p.set_subtitle_position(80), Ok(()));
+        assert_eq!(p.get_property("sub-pos").as_deref(), Some("80.000000"));
+        assert_eq!(p.get_property("sid").as_deref(), Some("no"));
     }
 
     #[test]

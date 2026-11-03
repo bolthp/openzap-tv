@@ -22,7 +22,7 @@ use openzap::loader::{self, Loaded};
 use openzap::m3u::{Channel, Playlist};
 use openzap::platform;
 use openzap::player::{AspectMode, Player, PlayerEvent, PropertyKind, PropertyValue};
-use openzap::tracks::{self, AudioTrack};
+use openzap::tracks::{self, Track};
 
 use crate::filepick::{self, Pick, PickState, PickTarget};
 use crate::settings::{self, Outcome, SettingsDraft};
@@ -82,6 +82,8 @@ enum Action {
     ToggleFullscreen,
     SetAspect(AspectMode),
     SetAudio(i64),
+    /// `None` turns subtitles off.
+    SetSubtitle(Option<i64>),
     OpenSettings,
     Reload,
 }
@@ -271,7 +273,11 @@ pub struct App {
     /// The bottom bar (guide and controls).
     bar: BarState,
     /// Audio tracks of the current stream.
-    tracks: Vec<AudioTrack>,
+    tracks: Vec<Track>,
+    /// Subtitle tracks of the current stream.
+    subtitles: Vec<Track>,
+    /// `sub-pos` last sent to mpv (subtitles are lifted above the bar).
+    sub_pos_applied: Option<u32>,
     tracks_refreshed_at: Option<f64>,
     /// Scroll the list to this channel on the next frame.
     scroll_to: Option<usize>,
@@ -390,6 +396,8 @@ impl App {
             muted: false,
             bar: BarState::default(),
             tracks: Vec::new(),
+            subtitles: Vec::new(),
+            sub_pos_applied: None,
             tracks_refreshed_at: None,
             scroll_to: None,
             view_pending: true,
@@ -639,6 +647,7 @@ impl App {
 
     /// Releases the renderer and then mpv (GL context must be current).
     fn release_player(&mut self) {
+        self.sub_pos_applied = None;
         self.video.detach();
         self.player = None;
         self.playing = None;
@@ -752,6 +761,7 @@ impl App {
                 self.video.clear();
                 self.info.reset();
                 self.tracks.clear();
+                self.subtitles.clear();
                 self.tracks_refreshed_at = None;
                 self.stream = StreamState::Opening;
                 self.status = "Loading...".into();
@@ -879,6 +889,9 @@ impl App {
         }
         if pressed(egui::Key::A) {
             self.next_audio_track(time);
+        }
+        if pressed(egui::Key::S) {
+            self.next_subtitle(time);
         }
         if pressed(egui::Key::Enter) {
             match self.digits.finish(time, true) {
@@ -1023,6 +1036,7 @@ impl App {
                 Action::ToggleFullscreen => self.set_fullscreen(ctx, !is_fullscreen(ctx)),
                 Action::SetAspect(mode) => self.set_aspect(mode, time),
                 Action::SetAudio(id) => self.select_audio_track(id, time),
+                Action::SetSubtitle(id) => self.select_subtitle(id, time),
                 Action::OpenSettings => {
                     self.settings = Some(SettingsDraft::new(
                         &self.playlist_input,
@@ -1095,6 +1109,7 @@ impl App {
         }
         if let Some(player) = &self.player {
             self.tracks = tracks::audio_tracks(|name| player.get_property(name));
+            self.subtitles = tracks::subtitle_tracks(|name| player.get_property(name));
         }
         self.tracks_refreshed_at = Some(time);
     }
@@ -1122,6 +1137,50 @@ impl App {
             .find(|t| t.id == id)
             .map_or_else(|| format!("Track {id}"), |t| t.label());
         self.show_osd(format!("Audio: {label}"), time);
+    }
+
+    /// Keeps subtitles above the bar: `covered` is the share (0–1) of the
+    /// video height the bar takes right now.
+    fn lift_subtitles(&mut self, covered: f32) {
+        let pos = subtitle_position(covered);
+        if self.subtitles.is_empty() || self.sub_pos_applied == Some(pos) {
+            return;
+        }
+        if let Some(player) = &self.player
+            && player.set_subtitle_position(pos).is_ok()
+        {
+            self.sub_pos_applied = Some(pos);
+        }
+    }
+
+    fn next_subtitle(&mut self, time: f64) {
+        self.tracks_refreshed_at = None;
+        self.refresh_tracks(time);
+        if self.subtitles.is_empty() {
+            self.show_osd("No subtitles", time);
+            return;
+        }
+        self.select_subtitle(tracks::next_subtitle(&self.subtitles), time);
+    }
+
+    /// Shows subtitle track `id`, or none.
+    fn select_subtitle(&mut self, id: Option<i64>, time: f64) {
+        if let Some(Err(e)) = self.player.as_ref().map(|p| p.set_subtitle_track(id)) {
+            self.status = format!("Cannot switch subtitles: {e}");
+            return;
+        }
+        for t in &mut self.subtitles {
+            t.selected = Some(t.id) == id;
+        }
+        let label = match id {
+            None => "off".to_string(),
+            Some(id) => self
+                .subtitles
+                .iter()
+                .find(|t| t.id == id)
+                .map_or_else(|| format!("Track {id}"), |t| t.label()),
+        };
+        self.show_osd(format!("Subtitles: {label}"), time);
     }
 
     /// Enters or leaves fullscreen. A fullscreen window is on top anyway;
@@ -1249,6 +1308,12 @@ fn unix_now() -> i64 {
 
 fn is_fullscreen(ctx: &egui::Context) -> bool {
     ctx.input(|i| i.viewport().fullscreen.unwrap_or(false))
+}
+
+/// mpv `sub-pos` (percent from the top) that keeps subtitles above a bar
+/// covering `covered` (0–1) of the video; never above the middle.
+fn subtitle_position(covered: f32) -> u32 {
+    (100.0 - covered.clamp(0.0, 0.5) * 100.0).round() as u32
 }
 
 fn has_logos(guide: &GuideIndex, channels: usize) -> bool {
@@ -1848,6 +1913,48 @@ mod tests {
         app.actions.push(Action::ToggleFavorite(2));
         app.apply_actions(&egui::Context::default());
         assert!(app.is_favorite(2) && !app.is_favorite(0) && !app.is_favorite(99));
+    }
+
+    #[test]
+    fn subtitle_selection_updates_the_list_and_osd() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+        app.next_subtitle(0.0);
+        assert_eq!(
+            app.osd.as_ref().map(|(t, _)| t.as_str()),
+            Some("No subtitles")
+        );
+
+        let track = |id, lang: &str| Track {
+            id,
+            lang: Some(lang.into()),
+            title: None,
+            codec: None,
+            channels: None,
+            selected: false,
+        };
+        app.subtitles = vec![track(1, "eng"), track(2, "rus")];
+        app.select_subtitle(Some(2), 1.0);
+        assert!(app.subtitles[1].selected && !app.subtitles[0].selected);
+        assert_eq!(
+            app.osd.as_ref().map(|(t, _)| t.as_str()),
+            Some("Subtitles: Russian")
+        );
+        app.actions.push(Action::SetSubtitle(None));
+        app.apply_actions(&egui::Context::default());
+        assert!(app.subtitles.iter().all(|t| !t.selected));
+        assert_eq!(
+            app.osd.as_ref().map(|(t, _)| t.as_str()),
+            Some("Subtitles: off")
+        );
+    }
+
+    #[test]
+    fn subtitles_rise_above_the_bar() {
+        assert_eq!(subtitle_position(0.0), 100);
+        assert_eq!(subtitle_position(0.25), 75);
+        assert_eq!(subtitle_position(0.9), 50, "never above the middle");
+        assert_eq!(subtitle_position(-1.0), 100);
     }
 
     #[test]

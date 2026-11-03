@@ -12,7 +12,7 @@ Desktop IPTV player for Windows, Linux and macOS: HLS/HTTP streams, M3U playlist
 - Video plays inside the main window (libmpv, OpenGL)
 - Channel list on the left or right (or hidden); the programme guide and the
   controls slide up over the video
-- Audio track switching, picture size (aspect ratio, crop, stretch), always on top
+- Audio track and subtitle switching, picture size (aspect ratio, crop, stretch), always on top
 - Dark, light or system theme
 - Channel logos (`tvg-logo` from the playlist, otherwise the guide's channel
   icon), cached on disk for a week
@@ -72,6 +72,7 @@ keys, so keep it private. The window size and position are kept next to it in
 | `M` / mouse wheel over video | mute / volume |
 | `L` | show / hide the channel list (fullscreen: keep it open) |
 | `A` | next audio track (when the stream has several) |
+| `S` | subtitles: off → each track → off (when the stream has any) |
 | `Z` | picture size: auto, 16:9, 4:3, fill (crop), stretch |
 | `T` | always on top |
 | `R` | restart the stream (also after "no picture for 20 s") |

@@ -143,6 +143,15 @@ pub(crate) fn codec_label(name: &str) -> String {
         "ac3" => "AC-3".into(),
         "eac3" => "E-AC-3".into(),
         "aac" | "aac_latm" => "AAC".into(),
+        "subrip" => "SRT".into(),
+        "ass" | "ssa" => "ASS".into(),
+        "webvtt" => "WebVTT".into(),
+        "dvb_subtitle" => "DVB".into(),
+        "dvd_subtitle" => "DVD".into(),
+        "dvb_teletext" => "Teletext".into(),
+        "hdmv_pgs_subtitle" => "PGS".into(),
+        "eia_608" => "CC".into(),
+        "mov_text" => "Text".into(),
         other => other.to_uppercase(),
     }
 }
