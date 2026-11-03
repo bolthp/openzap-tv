@@ -17,6 +17,7 @@ Desktop IPTV player for Windows, Linux and macOS: HLS/HTTP streams, M3U playlist
 - Channel logos (`tvg-logo` from the playlist, otherwise the guide's channel
   icon), cached on disk for a week
 - Programme times in local time
+- Programme guide per channel: every programme by day, with descriptions
 - Stream info: resolution, codecs, frame rate, HDR, hardware/software decoding, bitrate
 
 ## Install
@@ -70,6 +71,7 @@ keys, so keep it private. Logos are cached in `~/.cache/openzap/logos` on Linux 
 | `A` | next audio track (when the stream has several) |
 | `Z` | picture size: auto, 16:9, 4:3, fill (crop), stretch |
 | `T` | always on top |
+| `G` | programme guide of the channel (`Esc` closes it) |
 | `I` | show / hide stream info (resolution, codecs, HDR, decoder, bitrate) |
 
 Moving the mouse over the video brings up the bar with the programme guide

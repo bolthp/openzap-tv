@@ -223,6 +223,13 @@ impl App {
                 Side::Right => right = right.min(list.left()),
             }
         }
+        // The guide panel sits on the other side.
+        if let Some(guide) = self.schedule.visible_rect() {
+            match self.config.view.list_side {
+                Side::Left => right = right.min(guide.left()),
+                Side::Right => left = left.max(guide.right()),
+            }
+        }
         let bar = egui::Rect::from_min_max(
             egui::pos2(left, top),
             egui::pos2(right.max(left), top + height),
@@ -334,125 +341,150 @@ impl App {
     }
 
     fn bar_controls(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            let playing = self.playing.is_some();
-            let (icon, hint) = if playing {
-                ("⏹", "Stop")
-            } else {
-                ("▶", "Play")
-            };
-            let can_play = playing || self.selected.is_some();
-            if ui
-                .add_enabled(can_play, egui::Button::new(icon))
-                .on_hover_text(hint)
-                .clicked()
-            {
-                match (playing, self.selected) {
-                    (true, _) => self.actions.push(Action::Stop),
-                    (false, Some(idx)) => self.pending_play = Some(idx),
-                    (false, None) => {}
-                }
-            }
-            let mute_icon = if self.muted { "🔇" } else { "🔊" };
-            if ui.button(mute_icon).on_hover_text("Mute (M)").clicked() {
-                self.actions.push(Action::ToggleMute);
-            }
-            let slider = ui.add(
-                egui::Slider::new(&mut self.volume, 0.0..=100.0)
-                    .show_value(false)
-                    .trailing_fill(true),
-            );
-            if slider.changed() {
-                self.pending_volume = true;
-            }
-            if slider.drag_stopped() {
-                self.pending_save = true;
-            }
-            if let Some(idx) = self.playing.or(self.selected) {
-                let (star, hint) = if self.is_favorite(idx) {
-                    ("★", "Remove from favorites")
-                } else {
-                    ("☆", "Add to favorites")
-                };
-                if ui.button(star).on_hover_text(hint).clicked() {
-                    self.actions.push(Action::ToggleFavorite(idx));
-                }
-            }
-
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("⛶").on_hover_text("Fullscreen (F)").clicked() {
-                    self.actions.push(Action::ToggleFullscreen);
-                }
-                let list_shown = if self.fullscreen {
-                    self.list_overlay.pinned
-                } else {
-                    self.config.view.list_visible
-                };
-                let list_hint = match (self.fullscreen, list_shown) {
-                    (true, false) => "Keep the channel list open (L)",
-                    (true, true) => "Let the channel list slide away (L)",
-                    (false, true) => "Hide the channel list (L)",
-                    (false, false) => "Show the channel list (L)",
-                };
-                if ui
-                    .selectable_label(list_shown, "☰")
-                    .on_hover_text(list_hint)
-                    .clicked()
-                {
-                    self.actions.push(Action::ToggleList);
-                }
-                let pinned = self.on_top_supported && self.config.view.always_on_top;
-                let pin = ui
-                    .add_enabled(
-                        self.on_top_supported,
-                        egui::Button::selectable(pinned, "📌"),
-                    )
-                    .on_hover_text("Always on top (T)")
-                    .on_disabled_hover_text(
-                        "On Wayland an app cannot keep its window on top. \
-                         Use the window menu instead: Alt+Space (or right-click \
-                         the title bar) → Always on Top.",
-                    );
-                if pin.clicked() {
-                    self.actions.push(Action::ToggleOnTop);
-                }
-                if ui.button("⚙").on_hover_text("Settings").clicked() {
-                    self.actions.push(Action::OpenSettings);
-                }
-                let aspect = self.config.view.aspect;
-                egui::ComboBox::from_id_salt("aspect")
-                    .selected_text(aspect.label())
-                    .show_ui(ui, |ui| {
-                        for mode in AspectMode::ALL {
-                            if ui.selectable_label(mode == aspect, mode.label()).clicked() {
-                                self.actions.push(Action::SetAspect(mode));
-                            }
-                        }
-                    })
-                    .response
-                    .on_hover_text("Picture size (Z)");
-                if self.tracks.len() > 1 {
-                    let current = self
-                        .tracks
-                        .iter()
-                        .find(|t| t.selected)
-                        .map_or_else(|| "Audio".to_string(), |t| t.label());
-                    egui::ComboBox::from_id_salt("audio")
-                        .selected_text(current)
-                        .width(180.0)
-                        .truncate()
-                        .show_ui(ui, |ui| {
-                            for t in &self.tracks {
-                                if ui.selectable_label(t.selected, t.label()).clicked() {
-                                    self.actions.push(Action::SetAudio(t.id));
-                                }
-                            }
-                        })
-                        .response
-                        .on_hover_text("Audio track (A)");
-                }
+        // Rough widths of the two groups; below that the view group wraps
+        // onto its own row (e.g. when the guide panel narrows the bar).
+        let audio = if self.tracks.len() > 1 { 200.0 } else { 0.0 };
+        let one_row = ui.available_width() >= 300.0 + 330.0 + audio;
+        let right_to_left = egui::Layout::right_to_left(egui::Align::Center);
+        if one_row {
+            ui.horizontal(|ui| {
+                self.playback_controls(ui);
+                ui.with_layout(right_to_left, |ui| self.view_controls(ui));
             });
-        });
+        } else {
+            ui.horizontal(|ui| self.playback_controls(ui));
+            ui.horizontal(|ui| ui.with_layout(right_to_left, |ui| self.view_controls(ui)));
+        }
+    }
+
+    /// Stop/play, mute, volume, favorite.
+    fn playback_controls(&mut self, ui: &mut egui::Ui) {
+        let playing = self.playing.is_some();
+        let (icon, hint) = if playing {
+            ("⏹", "Stop")
+        } else {
+            ("▶", "Play")
+        };
+        let can_play = playing || self.selected.is_some();
+        if ui
+            .add_enabled(can_play, egui::Button::new(icon))
+            .on_hover_text(hint)
+            .clicked()
+        {
+            match (playing, self.selected) {
+                (true, _) => self.actions.push(Action::Stop),
+                (false, Some(idx)) => self.pending_play = Some(idx),
+                (false, None) => {}
+            }
+        }
+        let mute_icon = if self.muted { "🔇" } else { "🔊" };
+        if ui.button(mute_icon).on_hover_text("Mute (M)").clicked() {
+            self.actions.push(Action::ToggleMute);
+        }
+        let slider = ui.add(
+            egui::Slider::new(&mut self.volume, 0.0..=100.0)
+                .show_value(false)
+                .trailing_fill(true),
+        );
+        if slider.changed() {
+            self.pending_volume = true;
+        }
+        if slider.drag_stopped() {
+            self.pending_save = true;
+        }
+        if let Some(idx) = self.playing.or(self.selected) {
+            let (star, hint) = if self.is_favorite(idx) {
+                ("★", "Remove from favorites")
+            } else {
+                ("☆", "Add to favorites")
+            };
+            if ui.button(star).on_hover_text(hint).clicked() {
+                self.actions.push(Action::ToggleFavorite(idx));
+            }
+        }
+    }
+
+    /// Fullscreen, list, on top, guide, settings, picture size, audio
+    /// (laid out right to left).
+    fn view_controls(&mut self, ui: &mut egui::Ui) {
+        if ui.button("⛶").on_hover_text("Fullscreen (F)").clicked() {
+            self.actions.push(Action::ToggleFullscreen);
+        }
+        let list_shown = if self.fullscreen {
+            self.list_overlay.pinned
+        } else {
+            self.config.view.list_visible
+        };
+        let list_hint = match (self.fullscreen, list_shown) {
+            (true, false) => "Keep the channel list open (L)",
+            (true, true) => "Let the channel list slide away (L)",
+            (false, true) => "Hide the channel list (L)",
+            (false, false) => "Show the channel list (L)",
+        };
+        if ui
+            .selectable_label(list_shown, "☰")
+            .on_hover_text(list_hint)
+            .clicked()
+        {
+            self.actions.push(Action::ToggleList);
+        }
+        let pinned = self.on_top_supported && self.config.view.always_on_top;
+        let pin = ui
+            .add_enabled(
+                self.on_top_supported,
+                egui::Button::selectable(pinned, "📌"),
+            )
+            .on_hover_text("Always on top (T)")
+            .on_disabled_hover_text(
+                "On Wayland an app cannot keep its window on top. \
+                 Use the window menu instead: Alt+Space (or right-click \
+                 the title bar) → Always on Top.",
+            );
+        if pin.clicked() {
+            self.actions.push(Action::ToggleOnTop);
+        }
+        if ui
+            .selectable_label(self.schedule.open, "📅")
+            .on_hover_text("Programme guide (G)")
+            .clicked()
+        {
+            self.actions.push(Action::ToggleSchedule);
+        }
+        if ui.button("⚙").on_hover_text("Settings").clicked() {
+            self.actions.push(Action::OpenSettings);
+        }
+        let aspect = self.config.view.aspect;
+        egui::ComboBox::from_id_salt("aspect")
+            .selected_text(aspect.label())
+            .show_ui(ui, |ui| {
+                for mode in AspectMode::ALL {
+                    if ui.selectable_label(mode == aspect, mode.label()).clicked() {
+                        self.actions.push(Action::SetAspect(mode));
+                    }
+                }
+            })
+            .response
+            .on_hover_text("Picture size (Z)");
+        if self.tracks.len() > 1 {
+            let current = self
+                .tracks
+                .iter()
+                .find(|t| t.selected)
+                .map_or_else(|| "Audio".to_string(), |t| t.label());
+            egui::ComboBox::from_id_salt("audio")
+                .selected_text(current)
+                .width(180.0)
+                .truncate()
+                .show_ui(ui, |ui| {
+                    for t in &self.tracks {
+                        if ui.selectable_label(t.selected, t.label()).clicked() {
+                            self.actions.push(Action::SetAudio(t.id));
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("Audio track (A)");
+        }
     }
 }
 

@@ -20,10 +20,9 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
       mark it with `tvg-rec="<days>"` or `catchup`/`catchup-days`/
       `catchup-source`; URL schemes differ (flussonic `index-<start>-<dur>`,
       `?utc=&lutc=` shift, `append`). Needs per-scheme URL building + tests.
+- [ ] Archive marks in the programme guide (once archive exists).
 - [ ] **Timeshift** on archive channels: pause live, jump to the programme
       start, seek ±15 s / 1 / 3 / 10 min, previous/next programme, back to live.
-- [ ] **Programme list** per channel (past with archive marks, now, upcoming);
-      replaces "Day schedule" below.
 - [ ] Channel numbers, digit entry to jump, previous channel (`Backspace`).
 - [ ] `I` cycles: channel + programme → programme description → stream info → off.
 - [ ] Subtitle switching (`S`); restart stream.
@@ -35,7 +34,6 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
 
 ## Programme guide
 
-- [ ] Day schedule for a channel, not only now/next.
 - [ ] Refresh the guide automatically (daily); data is kept for 4 days ahead.
 
 ## Interface

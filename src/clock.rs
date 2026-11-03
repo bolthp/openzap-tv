@@ -15,6 +15,31 @@ pub fn local_hm(unix: i64) -> String {
     format_hm(unix, utc_offset(unix))
 }
 
+/// Local calendar day of `unix` as days since 1970-01-01.
+pub fn local_day(unix: i64) -> i64 {
+    (unix + utc_offset(unix)).div_euclid(86_400)
+}
+
+/// "Today", "Tomorrow", "Yesterday", otherwise e.g. "Wed 5 Nov".
+/// Both arguments are day numbers (see [`local_day`]).
+pub fn day_label(day: i64, today: i64) -> String {
+    const WEEKDAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    match day - today {
+        0 => "Today".into(),
+        1 => "Tomorrow".into(),
+        -1 => "Yesterday".into(),
+        _ => {
+            let (_, month, date) = civil_from_days(day);
+            // 1970-01-01 was a Thursday.
+            let weekday = WEEKDAYS[(day + 3).rem_euclid(7) as usize];
+            format!("{weekday} {date} {}", MONTHS[month as usize - 1])
+        }
+    }
+}
+
 /// "HH:MM" for Unix time `unix` shifted by `offset` seconds.
 pub fn format_hm(unix: i64, offset: i64) -> String {
     let secs = (unix + offset).rem_euclid(86_400);
@@ -164,6 +189,17 @@ mod tests {
         // Crossing midnight in both directions.
         assert_eq!(format_hm(t, 6 * 3600), "00:05");
         assert_eq!(format_hm(t, -19 * 3600), "23:05");
+    }
+
+    #[test]
+    fn day_labels() {
+        let today = days_from_civil(2026, 11, 3); // a Tuesday
+        assert_eq!(day_label(today, today), "Today");
+        assert_eq!(day_label(today + 1, today), "Tomorrow");
+        assert_eq!(day_label(today - 1, today), "Yesterday");
+        assert_eq!(day_label(today + 2, today), "Thu 5 Nov");
+        assert_eq!(day_label(days_from_civil(2027, 1, 1), today), "Fri 1 Jan");
+        assert_eq!(day_label(0, today), "Thu 1 Jan");
     }
 
     #[test]

@@ -4,6 +4,7 @@
 mod list;
 mod logo;
 mod palette;
+mod schedule;
 mod view;
 
 use std::path::PathBuf;
@@ -27,6 +28,7 @@ use crate::settings::{self, Outcome, SettingsDraft};
 use crate::video::VideoView;
 use list::ListOverlay;
 use logo::Logos;
+use schedule::ScheduleView;
 use view::{BAR_START_SECS, BarState};
 
 /// What the current stream is doing, as shown on top of the video.
@@ -74,6 +76,7 @@ enum Action {
     ToggleList,
     SwapListSide,
     ToggleOnTop,
+    ToggleSchedule,
     ToggleFullscreen,
     SetAspect(AspectMode),
     SetAudio(i64),
@@ -185,6 +188,8 @@ pub struct App {
     fullscreen: bool,
     /// The channel list over the video when it is not docked.
     list_overlay: ListOverlay,
+    /// The programme guide panel.
+    schedule: ScheduleView,
     /// Channel logos; created once the window's context is known.
     logos: Option<Logos>,
     /// Some channel has a logo, so rows reserve room for one.
@@ -286,6 +291,7 @@ impl App {
             on_top_applied: None,
             // Real value set in `from_args`; tests stay independent of the session.
             on_top_supported: true,
+            schedule: ScheduleView::default(),
             logos: None,
             show_logos,
             fullscreen: false,
@@ -706,8 +712,12 @@ impl App {
         if pressed(egui::Key::F) {
             self.set_fullscreen(ctx, !is_fullscreen(ctx));
         }
-        if pressed(egui::Key::Escape) && is_fullscreen(ctx) {
+        // Esc closes the guide first, then leaves fullscreen.
+        if pressed(egui::Key::Escape) && !self.schedule.close() && is_fullscreen(ctx) {
             self.set_fullscreen(ctx, false);
+        }
+        if pressed(egui::Key::G) {
+            self.schedule.toggle();
         }
         if pressed(egui::Key::M) {
             self.toggle_mute(time);
@@ -757,6 +767,7 @@ impl App {
                     self.pending_save = true;
                 }
                 Action::ToggleOnTop => self.toggle_on_top(time),
+                Action::ToggleSchedule => self.schedule.toggle(),
                 Action::ToggleFullscreen => self.set_fullscreen(ctx, !is_fullscreen(ctx)),
                 Action::SetAspect(mode) => self.set_aspect(mode, time),
                 Action::SetAudio(id) => self.select_audio_track(id, time),
@@ -939,6 +950,7 @@ impl eframe::App for App {
         if !docked {
             self.list_overlay(ui.ctx(), screen, now);
         }
+        self.schedule_panel(ui.ctx(), screen, now);
         let ctx = ui.ctx().clone();
         if let Some(draft) = &mut self.settings
             && let Some(outcome) = settings::show(&ctx, draft)

@@ -108,6 +108,15 @@ impl GuideIndex {
         self.logos.get(channel_idx)?.as_deref()
     }
 
+    /// All programmes of a playlist channel, sorted by start (the EPG keeps
+    /// a few hours back and some days ahead).
+    pub fn schedule<'a>(&self, epg: &'a Epg, channel_idx: usize) -> Vec<&'a Programme> {
+        self.epg_id(channel_idx)
+            .and_then(|id| self.by_channel.get(id))
+            .map(|list| list.iter().map(|&i| &epg.programmes[i]).collect())
+            .unwrap_or_default()
+    }
+
     /// Current and next programme of a playlist channel at Unix time `at`.
     ///
     /// `epg` must be the one the index was built from. If programmes
@@ -269,6 +278,20 @@ mod tests {
         // variant: the main name wins.
         assert_eq!(idx.epg_id(1), Some("news.example"));
         assert_eq!(idx.epg_id(2), Some("film.example"));
+    }
+
+    #[test]
+    fn schedule_is_sorted_and_empty_without_guide() {
+        let (idx, epg) = single(channel("Example News", None), sample_epg());
+        let titles: Vec<&str> = idx
+            .schedule(&epg, 0)
+            .iter()
+            .map(|p| p.title.as_str())
+            .collect();
+        assert_eq!(titles, ["A", "B", "C"]);
+        assert!(idx.schedule(&epg, 5).is_empty());
+        let (idx, epg) = single(channel("Unknown", None), sample_epg());
+        assert!(idx.schedule(&epg, 0).is_empty());
     }
 
     #[test]
