@@ -47,7 +47,6 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
       underlay), iced (Elm-style), Tauri/Dioxus (web UI — embedding mpv's
       video is much harder there). egui fits the mpv OpenGL embedding well
       and can look good with styling; revisit only if styling hits limits.
-- [ ] File picker for playlist/EPG instead of typing paths.
 
 ## Settings
 

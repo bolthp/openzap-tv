@@ -42,8 +42,8 @@ on top; use the window menu instead (`Alt+Space` or right-click the title bar â†
 
 ## Usage
 
-On first start the **Settings** dialog opens: enter the playlist (file path or
-URL) and, optionally, the programme guide. Settings also hold hardware
+On first start the **Settings** dialog opens: enter the playlist (a URL, or
+a file chosen with **Browseâ€¦**) and, optionally, the programme guide. Settings also hold hardware
 decoding, the network buffer and whether to resume the last channel on start.
 
 ```sh

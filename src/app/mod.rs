@@ -24,6 +24,7 @@ use openzap::platform;
 use openzap::player::{AspectMode, Player, PlayerEvent, PropertyKind, PropertyValue};
 use openzap::tracks::{self, AudioTrack};
 
+use crate::filepick::{self, Pick, PickState, PickTarget};
 use crate::settings::{self, Outcome, SettingsDraft};
 use crate::video::VideoView;
 use list::ListOverlay;
@@ -165,6 +166,8 @@ pub struct App {
     log: Option<Arc<DebugLog>>,
     /// The settings dialog, while open.
     settings: Option<SettingsDraft>,
+    /// A file dialog opened from the settings, while open.
+    file_pick: Option<Pick>,
     playing: Option<usize>,
     status: String,
     volume: f64,
@@ -311,6 +314,7 @@ impl App {
             ctx: egui::Context::default(),
             log: None,
             settings: None,
+            file_pick: None,
         }
     }
 
@@ -750,6 +754,41 @@ impl App {
         }
     }
 
+    /// Opens a file dialog the settings asked for, and puts a chosen file
+    /// into its field once the dialog is done.
+    fn update_file_pick(&mut self, ctx: &egui::Context) {
+        let Some(draft) = &mut self.settings else {
+            self.file_pick = None; // settings closed meanwhile: drop the result
+            return;
+        };
+        if let Some(target) = draft.pick_request.take()
+            && self.file_pick.is_none()
+        {
+            let current = match target {
+                PickTarget::Playlist => &draft.playlist,
+                PickTarget::Epg => &draft.epg,
+            };
+            self.file_pick = Some(filepick::open(target, current, ctx));
+        }
+        if let Some(pick) = &self.file_pick {
+            match pick.poll() {
+                PickState::Open => {}
+                PickState::Chosen(path) => {
+                    let path = path.to_string_lossy().into_owned();
+                    match pick.target {
+                        PickTarget::Playlist => draft.playlist = path,
+                        PickTarget::Epg => draft.epg = path,
+                    }
+                    self.file_pick = None;
+                }
+                PickState::Cancelled => self.file_pick = None,
+            }
+        }
+        if let Some(draft) = &mut self.settings {
+            draft.picking = self.file_pick.is_some();
+        }
+    }
+
     /// Applies the actions recorded while drawing.
     fn apply_actions(&mut self, ctx: &egui::Context) {
         let time = ctx.input(|i| i.time);
@@ -952,6 +991,7 @@ impl eframe::App for App {
         }
         self.schedule_panel(ui.ctx(), screen, now);
         let ctx = ui.ctx().clone();
+        self.update_file_pick(&ctx);
         if let Some(draft) = &mut self.settings
             && let Some(outcome) = settings::show(&ctx, draft)
         {
@@ -1439,6 +1479,33 @@ mod tests {
         app.toggle_list(0.0);
         assert!(!app.config.view.list_visible);
         assert!(app.pending_save);
+    }
+
+    #[test]
+    fn chosen_file_goes_into_its_settings_field() {
+        let mut app = App::new(Playlist::default(), Epg::default(), vec![]);
+        let ctx = egui::Context::default();
+        app.settings = Some(draft(&app));
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.file_pick = Some(Pick::from_receiver(PickTarget::Epg, rx));
+
+        app.update_file_pick(&ctx);
+        assert!(app.settings.as_ref().unwrap().picking);
+        tx.send(Some("/data/guide.xml.gz".into())).unwrap();
+        app.update_file_pick(&ctx);
+        let d = app.settings.as_ref().unwrap();
+        assert_eq!(d.epg, "/data/guide.xml.gz");
+        assert!(d.playlist.is_empty() && !d.picking);
+        assert!(app.file_pick.is_none());
+    }
+
+    #[test]
+    fn closing_settings_drops_the_dialog_result() {
+        let mut app = App::new(Playlist::default(), Epg::default(), vec![]);
+        let (_tx, rx) = std::sync::mpsc::channel();
+        app.file_pick = Some(Pick::from_receiver(PickTarget::Playlist, rx));
+        app.update_file_pick(&egui::Context::default());
+        assert!(app.file_pick.is_none());
     }
 
     #[test]

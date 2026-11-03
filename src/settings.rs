@@ -4,6 +4,8 @@ use eframe::egui;
 use openzap::config::{Config, Theme};
 use openzap::player::{HardwareDecoding, PlaybackSettings};
 
+use crate::filepick::PickTarget;
+
 /// Everything the dialog can change, copied from the current state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SettingsDraft {
@@ -12,6 +14,10 @@ pub struct SettingsDraft {
     pub resume_last: bool,
     pub playback: PlaybackSettings,
     pub theme: Theme,
+    /// A "browse" button was clicked; the app opens the file dialog.
+    pub pick_request: Option<PickTarget>,
+    /// A file dialog is open (the browse buttons are disabled meanwhile).
+    pub picking: bool,
 }
 
 impl SettingsDraft {
@@ -24,6 +30,8 @@ impl SettingsDraft {
             resume_last: config.resume_last,
             playback: config.playback,
             theme: config.view.theme,
+            pick_request: None,
+            picking: false,
         }
     }
 }
@@ -48,17 +56,23 @@ pub fn show(ctx: &egui::Context, draft: &mut SettingsDraft) -> Option<Outcome> {
             .spacing([12.0, 8.0])
             .show(ui, |ui| {
                 ui.label("Playlist");
-                ui.add(
-                    egui::TextEdit::singleline(&mut draft.playlist)
-                        .hint_text("file path or URL (.m3u, .m3u8)")
-                        .desired_width(f32::INFINITY),
+                source_field(
+                    ui,
+                    &mut draft.playlist,
+                    "file path or URL (.m3u, .m3u8)",
+                    PickTarget::Playlist,
+                    &mut draft.pick_request,
+                    draft.picking,
                 );
                 ui.end_row();
                 ui.label("Programme guide");
-                ui.add(
-                    egui::TextEdit::singleline(&mut draft.epg)
-                        .hint_text("optional: file path or URL (.xml, .xml.gz)")
-                        .desired_width(f32::INFINITY),
+                source_field(
+                    ui,
+                    &mut draft.epg,
+                    "optional: file path or URL (.xml, .xml.gz)",
+                    PickTarget::Epg,
+                    &mut draft.pick_request,
+                    draft.picking,
                 );
                 ui.end_row();
             });
@@ -128,6 +142,34 @@ pub fn show(ctx: &egui::Context, draft: &mut SettingsDraft) -> Option<Outcome> {
     response
         .inner
         .or_else(|| response.should_close().then_some(Outcome::Cancel))
+}
+
+/// A text field for a path or URL with a "browse" button after it.
+fn source_field(
+    ui: &mut egui::Ui,
+    value: &mut String,
+    hint: &str,
+    target: PickTarget,
+    request: &mut Option<PickTarget>,
+    picking: bool,
+) {
+    ui.horizontal(|ui| {
+        let button_width = 72.0;
+        ui.add(
+            egui::TextEdit::singleline(value)
+                .hint_text(hint)
+                .desired_width(ui.available_width() - button_width - ui.spacing().item_spacing.x),
+        );
+        let browse = ui
+            .add_enabled(
+                !picking,
+                egui::Button::new("Browse…").min_size(egui::vec2(button_width, 0.0)),
+            )
+            .on_hover_text("Choose a file");
+        if browse.clicked() {
+            *request = Some(target);
+        }
+    });
 }
 
 fn section(ui: &mut egui::Ui, title: &str) {
