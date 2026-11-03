@@ -68,8 +68,13 @@ fn main() -> eframe::Result {
     if let Some(log) = &debug_log {
         app.set_debug_log(Arc::clone(log));
     }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    install_desktop_entry(debug_log.as_deref());
+
     let mut viewport = eframe::egui::ViewportBuilder::default()
         .with_title("OpenZap")
+        // Lets Wayland compositors find `openzap.desktop` for the icon.
+        .with_app_id(openzap::desktop::APP_ID)
         .with_inner_size([1280.0, 760.0])
         .with_min_inner_size([720.0, 480.0]);
     // The PNG is compiled in, so this only fails if the file in the repo is broken.
@@ -95,6 +100,23 @@ fn main() -> eframe::Result {
         log.line(&format!("exit: {result:?}"));
     }
     result
+}
+
+/// Writes `~/.local/share/applications/openzap.desktop` (and the icon) so
+/// the taskbar shows OpenZap's icon; on Wayland the window cannot set it.
+/// Failures only cost the icon, so they are just logged.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn install_desktop_entry(log: Option<&DebugLog>) {
+    let Some(data_home) = openzap::desktop::data_home(|n| std::env::var(n).ok()) else {
+        return;
+    };
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let result = openzap::desktop::install(&data_home, &exe, include_bytes!("../assets/icon.png"));
+    if let Some(log) = log {
+        log.line(&format!("desktop entry: {result:?}"));
+    }
 }
 
 #[cfg(test)]

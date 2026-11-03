@@ -19,6 +19,7 @@ use openzap::epg::{Epg, EpgChannel, Programme};
 use openzap::guide::GuideIndex;
 use openzap::loader::{self, Loaded};
 use openzap::m3u::{Channel, Playlist};
+use openzap::platform;
 use openzap::player::{AspectMode, Player, PlayerEvent, PropertyKind, PropertyValue};
 use openzap::tracks::{self, AudioTrack};
 
@@ -57,6 +58,9 @@ const OSD_SECS: f64 = 1.5;
 
 /// How long stream info stays up after a channel starts, seconds.
 const INFO_BRIEF_SECS: f64 = 6.0;
+/// Shown instead of toggling "always on top" where the app cannot do it.
+const ON_TOP_UNAVAILABLE: &str = "Wayland: use the window menu (Alt+Space) for Always on Top";
+
 /// How often the audio track list is re-read while the bar is up, seconds.
 const TRACKS_REFRESH_SECS: f64 = 1.0;
 
@@ -185,6 +189,8 @@ pub struct App {
     logos: Option<Logos>,
     /// Some channel has a logo, so rows reserve room for one.
     show_logos: bool,
+    /// The window can be kept on top by the app (not on Wayland).
+    on_top_supported: bool,
     /// The window level last sent (true = always on top).
     on_top_applied: Option<bool>,
     /// Short on-screen message and the input time (seconds) it expires at.
@@ -234,6 +240,7 @@ impl App {
             Self::new(Playlist::default(), Epg::default(), vec![])
         };
         app.volume = config.volume;
+        app.on_top_supported = platform::can_keep_on_top(platform::is_wayland());
         app.autoload = !playlist_input.is_empty();
         app.resume_on_load = config.resume_last;
         // First start: nothing to show yet, so ask for a playlist right away.
@@ -277,6 +284,8 @@ impl App {
             scroll_to: None,
             view_pending: true,
             on_top_applied: None,
+            // Real value set in `from_args`; tests stay independent of the session.
+            on_top_supported: true,
             logos: None,
             show_logos,
             fullscreen: false,
@@ -790,6 +799,10 @@ impl App {
     }
 
     fn toggle_on_top(&mut self, time: f64) {
+        if !self.on_top_supported {
+            self.show_osd(ON_TOP_UNAVAILABLE, time);
+            return;
+        }
         self.config.view.always_on_top = !self.config.view.always_on_top;
         self.pending_save = true;
         let text = if self.config.view.always_on_top {
@@ -875,8 +888,10 @@ impl App {
 
     /// Sends the window level and theme to the window when they change.
     fn apply_view(&mut self, ctx: &egui::Context) {
-        let on_top = wants_on_top(self.config.view.always_on_top, is_fullscreen(ctx));
-        self.send_on_top(ctx, on_top);
+        if self.on_top_supported {
+            let on_top = wants_on_top(self.config.view.always_on_top, is_fullscreen(ctx));
+            self.send_on_top(ctx, on_top);
+        }
         if !std::mem::take(&mut self.view_pending) {
             return;
         }
@@ -1362,6 +1377,21 @@ mod tests {
             app.osd.map(|(t, _)| t).as_deref(),
             Some("Picture: Fill (crop)")
         );
+    }
+
+    #[test]
+    fn on_top_is_not_faked_where_unsupported() {
+        let mut app = App::new(Playlist::default(), Epg::default(), vec![]);
+        app.on_top_supported = false;
+        app.config.view.always_on_top = true; // e.g. saved on X11 earlier
+        app.toggle_on_top(1.0);
+        assert!(app.config.view.always_on_top, "setting left alone");
+        assert_eq!(
+            app.osd.as_ref().map(|(t, _)| t.as_str()),
+            Some(ON_TOP_UNAVAILABLE)
+        );
+        app.apply_view(&egui::Context::default());
+        assert_eq!(app.on_top_applied, None, "nothing sent to the window");
     }
 
     #[test]

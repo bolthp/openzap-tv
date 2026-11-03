@@ -14,6 +14,19 @@ pub fn should_prefer_x11(wsl: bool, has_x_display: bool) -> bool {
     wsl && has_x_display
 }
 
+/// True when the window will be a Wayland window (Linux/BSD with a
+/// Wayland session; winit prefers Wayland when `WAYLAND_DISPLAY` is set).
+pub fn is_wayland() -> bool {
+    cfg!(all(unix, not(target_os = "macos")))
+        && std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty())
+}
+
+/// Whether the app can keep its own window above others. Wayland has no
+/// request for that: only the compositor's window menu can do it.
+pub fn can_keep_on_top(wayland: bool) -> bool {
+    !wayland
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -24,5 +37,11 @@ mod tests {
         assert!(!should_prefer_x11(true, false)); // nothing to fall back to
         assert!(!should_prefer_x11(false, true)); // native Linux keeps Wayland
         assert!(!should_prefer_x11(false, false));
+    }
+
+    #[test]
+    fn always_on_top_needs_a_non_wayland_window() {
+        assert!(can_keep_on_top(false));
+        assert!(!can_keep_on_top(true));
     }
 }

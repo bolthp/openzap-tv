@@ -67,6 +67,12 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
 - [ ] Limit the logo textures kept in memory (LRU) for very long lists.
 - [ ] A "clear cache" button in Settings.
 
+## Testing
+
+- Public playlists for manual tests (no keys, many formats and odd names):
+  <https://github.com/iptv-org/iptv/tree/master/streams>. Never commit
+  downloaded copies; unit tests keep using synthetic `example.com` data.
+
 ## Packaging
 
 - [ ] Linux AppImage bundling libmpv (today the system `libmpv2` is required).

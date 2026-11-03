@@ -4,6 +4,7 @@ pub mod browse;
 pub mod clock;
 pub mod config;
 pub mod debuglog;
+pub mod desktop;
 pub mod epg;
 pub mod guide;
 pub mod loader;

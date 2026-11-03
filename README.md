@@ -30,6 +30,15 @@ Download an archive from the [Releases](../../releases) page.
 
 OpenZap looks for libmpv next to the executable first, then in the system.
 
+On Linux, OpenZap adds itself to the application menu on first start
+(`~/.local/share/applications/openzap.desktop` and its icon), so launchers and
+the taskbar show its icon; the entry follows the executable if you move it.
+Delete those two files to remove it.
+
+On Wayland (the default on Ubuntu) an application cannot keep its own window
+on top; use the window menu instead (`Alt+Space` or right-click the title bar →
+*Always on Top*).
+
 ## Usage
 
 On first start the **Settings** dialog opens: enter the playlist (file path or

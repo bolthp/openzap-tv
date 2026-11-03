@@ -401,11 +401,19 @@ impl App {
                 {
                     self.actions.push(Action::ToggleList);
                 }
-                if ui
-                    .selectable_label(self.config.view.always_on_top, "📌")
+                let pinned = self.on_top_supported && self.config.view.always_on_top;
+                let pin = ui
+                    .add_enabled(
+                        self.on_top_supported,
+                        egui::Button::selectable(pinned, "📌"),
+                    )
                     .on_hover_text("Always on top (T)")
-                    .clicked()
-                {
+                    .on_disabled_hover_text(
+                        "On Wayland an app cannot keep its window on top. \
+                         Use the window menu instead: Alt+Space (or right-click \
+                         the title bar) → Always on Top.",
+                    );
+                if pin.clicked() {
                     self.actions.push(Action::ToggleOnTop);
                 }
                 if ui.button("⚙").on_hover_text("Settings").clicked() {
