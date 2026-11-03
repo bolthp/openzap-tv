@@ -1173,6 +1173,12 @@ impl eframe::App for App {
         self.release_player();
     }
 
+    /// eframe stores only the window size and position (`persistence`
+    /// feature); widget state is not worth keeping between runs.
+    fn persist_egui_memory(&self) -> bool {
+        false
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let now = unix_now();
         if std::mem::take(&mut self.autoload) {

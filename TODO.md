@@ -38,7 +38,7 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
 - [ ] Design pass: own font (e.g. Inter) and an icon font (e.g. Phosphor via
       `egui-phosphor`) instead of emoji-style symbols, spacing, a custom
       dark/light palette, hover/press animations.
-- [ ] Remember the window size/position; per-channel picture size.
+- [ ] Per-channel picture size.
 - [ ] Toolkit question (decided: stay on egui for now). Alternatives looked at:
       Slint (declarative, polished widgets, can render under an OpenGL
       underlay), iced (Elm-style), Tauri/Dioxus (web UI — embedding mpv's

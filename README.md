@@ -54,7 +54,8 @@ openzap playlist.m3u [epg.xml]            # or override them for this run
 Settings (sources, volume, favorites, playback options) are stored in a
 plain-text file: `~/.config/openzap/config.txt` on Linux,
 `%APPDATA%\OpenZap\config.txt` on Windows. It can contain URLs with access
-keys, so keep it private. Logos are cached in `~/.cache/openzap/logos` on Linux and
+keys, so keep it private. The window size and position are kept next to it in
+`window.ron`. Logos are cached in `~/.cache/openzap/logos` on Linux and
 `%LOCALAPPDATA%\OpenZap\cache\logos` on Windows.
 
 ## Keyboard

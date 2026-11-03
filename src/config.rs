@@ -305,6 +305,12 @@ pub fn config_path(platform: Platform, env: impl Fn(&str) -> Option<String>) -> 
     Some(base.join("config.txt"))
 }
 
+/// Where the window size and position are kept: `window.ron` next to the
+/// settings file. eframe treats this as a file path and creates its folder.
+pub fn window_state_path(config: &Path) -> PathBuf {
+    config.with_file_name("window.ron")
+}
+
 /// Settings file location for the current platform and environment.
 pub fn default_path() -> Option<PathBuf> {
     config_path(Platform::current(), |name| std::env::var(name).ok())
@@ -449,6 +455,14 @@ mod tests {
         assert_eq!(
             config_path(Platform::Windows, win),
             Some(PathBuf::from("C:\\Users\\me\\AppData\\Roaming").join("OpenZap/config.txt"))
+        );
+    }
+
+    #[test]
+    fn window_state_lives_next_to_the_settings() {
+        assert_eq!(
+            window_state_path(Path::new("/home/me/.config/openzap/config.txt")),
+            PathBuf::from("/home/me/.config/openzap/window.ron")
         );
     }
 

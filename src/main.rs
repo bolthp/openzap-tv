@@ -87,6 +87,9 @@ fn main() -> eframe::Result {
         // mpv renders video through OpenGL, so egui must use it too.
         renderer: eframe::Renderer::Glow,
         viewport,
+        // Window size and position (eframe's `persistence` feature).
+        persistence_path: openzap::config::default_path()
+            .map(|p| openzap::config::window_state_path(&p)),
         ..Default::default()
     };
     let result = eframe::run_native(
