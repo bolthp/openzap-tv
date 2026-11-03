@@ -71,6 +71,7 @@ keys, so keep it private. Logos are cached in `~/.cache/openzap/logos` on Linux 
 | `A` | next audio track (when the stream has several) |
 | `Z` | picture size: auto, 16:9, 4:3, fill (crop), stretch |
 | `T` | always on top |
+| `R` | restart the stream (also after "no picture for 20 s") |
 | `G` | programme guide of the channel (`Esc` closes it) |
 | `I` | show / hide stream info (resolution, codecs, HDR, decoder, bitrate) |
 

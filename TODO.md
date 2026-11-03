@@ -8,8 +8,6 @@ Backlog, roughly in priority order. Move items to a commit message when done.
       CPU). Verified: Windows + NVIDIA (nvdec, 4K HEVC). Still to check:
       Windows Intel/AMD, Linux VAAPI/NVIDIA (VAAPI may need the X11/Wayland
       display passed to mpv's renderer for zero-copy).
-- [ ] Give up on streams that never deliver a frame (e.g. 20 s in "Loading...")
-      with a clear message instead of waiting forever.
 - [ ] Check `PageUp` / `PageDown` channel switching on Windows (not tested yet).
 
 ## Inspired by OTT-Play
@@ -25,7 +23,7 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
       start, seek ±15 s / 1 / 3 / 10 min, previous/next programme, back to live.
 - [ ] Channel numbers, digit entry to jump, previous channel (`Backspace`).
 - [ ] `I` cycles: channel + programme → programme description → stream info → off.
-- [ ] Subtitle switching (`S`); restart stream.
+- [ ] Subtitle switching (`S`).
 - [ ] Fullscreen-first navigation: channel list and group picker as overlays
       over the video, fully usable from the keyboard (and a remote).
 - [ ] Several playlists (providers) at once.

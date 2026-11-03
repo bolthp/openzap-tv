@@ -78,6 +78,7 @@ enum Action {
     SwapListSide,
     ToggleOnTop,
     ToggleSchedule,
+    Restart,
     ToggleFullscreen,
     SetAspect(AspectMode),
     SetAudio(i64),
@@ -137,6 +138,47 @@ impl InfoOverlay {
     }
 }
 
+/// A stream that shows no picture for this long is given up, seconds.
+const STALL_SECS: f64 = 20.0;
+/// Why a stream was given up (shown as "Cannot play: ...").
+const STALL_MESSAGE: &str = "no picture for 20 s, the channel may be offline. Press R to retry";
+
+/// Notices a stream that keeps waiting (opening, buffering, or open but
+/// without a single frame). Times are egui input times in seconds.
+#[derive(Debug, Default)]
+struct StallWatch {
+    since: Option<f64>,
+    last_check: Option<f64>,
+}
+
+/// A longer gap between checks means the window was not drawing (e.g.
+/// minimized), so no frames could be counted: the wait starts over.
+const STALL_CHECK_GAP: f64 = 2.0;
+
+impl StallWatch {
+    /// `waiting`: the stream shows no picture right now. True once it has
+    /// waited `STALL_SECS` without a break.
+    fn timed_out(&mut self, time: f64, waiting: bool) -> bool {
+        if self
+            .last_check
+            .replace(time)
+            .is_some_and(|last| time - last > STALL_CHECK_GAP)
+        {
+            self.since = None;
+        }
+        if !waiting {
+            self.since = None;
+            return false;
+        }
+        let since = *self.since.get_or_insert(time);
+        if time - since >= STALL_SECS {
+            self.since = None;
+            return true;
+        }
+        false
+    }
+}
+
 /// A background load in progress, with the inputs it was started for.
 struct PendingLoad {
     rx: Receiver<Loaded>,
@@ -193,6 +235,9 @@ pub struct App {
     list_overlay: ListOverlay,
     /// The programme guide panel.
     schedule: ScheduleView,
+    stall: StallWatch,
+    /// Channel last started; `R` restarts it, also after a failure.
+    current: Option<usize>,
     /// Channel logos; created once the window's context is known.
     logos: Option<Logos>,
     /// Some channel has a logo, so rows reserve room for one.
@@ -295,6 +340,8 @@ impl App {
             // Real value set in `from_args`; tests stay independent of the session.
             on_top_supported: true,
             schedule: ScheduleView::default(),
+            stall: StallWatch::default(),
+            current: None,
             logos: None,
             show_logos,
             fullscreen: false,
@@ -552,6 +599,7 @@ impl App {
                 self.config.last_channel = Some(channel.key().to_string());
                 self.pending_save = true;
                 self.playing = Some(idx);
+                self.current = Some(idx);
                 self.status = "Loading...".into();
                 self.apply_volume();
             }
@@ -657,6 +705,8 @@ impl App {
             PlayerEvent::Log { .. } => {} // only written to the debug log
             // Also fired when a new channel replaces the old one, so `playing`
             // is left alone; it is cleared by `stop` and by failures.
+            // A stream given up on is stopped; keep showing why.
+            PlayerEvent::Ended if matches!(self.stream, StreamState::Failed(_)) => {}
             PlayerEvent::Ended => {
                 self.stream = StreamState::Idle;
                 self.status = "Stopped".into();
@@ -722,6 +772,9 @@ impl App {
         }
         if pressed(egui::Key::G) {
             self.schedule.toggle();
+        }
+        if pressed(egui::Key::R) {
+            self.restart();
         }
         if pressed(egui::Key::M) {
             self.toggle_mute(time);
@@ -789,6 +842,43 @@ impl App {
         }
     }
 
+    /// Gives up on a stream that has shown no picture for `STALL_SECS`.
+    fn check_stall(&mut self, time: f64) {
+        let waiting = match self.stream {
+            StreamState::Opening | StreamState::Buffering(_) => true,
+            // Open, but no frame yet: unless it is a radio channel.
+            StreamState::Playing => !self.video.has_frame() && self.stream_has_video(),
+            StreamState::Idle | StreamState::Failed(_) => false,
+        };
+        if !self.stall.timed_out(time, waiting) {
+            return;
+        }
+        self.dlog("stream stalled, giving up");
+        self.stream = StreamState::Failed(STALL_MESSAGE.into());
+        self.status = format!("Playback failed: {STALL_MESSAGE}");
+        self.playing = None;
+        self.info.reset();
+        if let Some(Err(e)) = self.player.as_ref().map(Player::stop) {
+            self.dlog(&format!("cannot stop stalled stream: {e}"));
+        }
+    }
+
+    /// The stream has (or may still get) a video track. mpv reports `vid`
+    /// as "no" for audio-only streams.
+    fn stream_has_video(&self) -> bool {
+        self.player
+            .as_ref()
+            .and_then(|p| p.get_property("vid"))
+            .is_none_or(|vid| vid != "no")
+    }
+
+    /// Plays the current (or last failed) channel again from scratch.
+    fn restart(&mut self) {
+        if let Some(idx) = self.playing.or(self.current) {
+            self.pending_play = Some(idx);
+        }
+    }
+
     /// Applies the actions recorded while drawing.
     fn apply_actions(&mut self, ctx: &egui::Context) {
         let time = ctx.input(|i| i.time);
@@ -807,6 +897,7 @@ impl App {
                 }
                 Action::ToggleOnTop => self.toggle_on_top(time),
                 Action::ToggleSchedule => self.schedule.toggle(),
+                Action::Restart => self.restart(),
                 Action::ToggleFullscreen => self.set_fullscreen(ctx, !is_fullscreen(ctx)),
                 Action::SetAspect(mode) => self.set_aspect(mode, time),
                 Action::SetAudio(id) => self.select_audio_track(id, time),
@@ -967,6 +1058,7 @@ impl eframe::App for App {
         }
         self.poll_loading();
         self.poll_player();
+        self.check_stall(ui.input(|i| i.time));
         self.handle_shortcuts(ui.ctx());
         self.apply_view(ui.ctx());
         let fullscreen = is_fullscreen(ui.ctx());
@@ -1506,6 +1598,69 @@ mod tests {
         app.file_pick = Some(Pick::from_receiver(PickTarget::Playlist, rx));
         app.update_file_pick(&egui::Context::default());
         assert!(app.file_pick.is_none());
+    }
+
+    /// Checks every second from `from` to `to` (inclusive), as frames do.
+    fn wait(watch: &mut StallWatch, from: f64, to: f64, waiting: bool) -> bool {
+        let mut fired = false;
+        let mut t = from;
+        while t <= to {
+            fired |= watch.timed_out(t, waiting);
+            t += 1.0;
+        }
+        fired
+    }
+
+    #[test]
+    fn stall_watch_needs_an_unbroken_wait() {
+        let mut watch = StallWatch::default();
+        assert!(!wait(&mut watch, 0.0, STALL_SECS - 1.0, true));
+        // A frame in between starts the count again.
+        assert!(!watch.timed_out(STALL_SECS, false));
+        assert!(!wait(&mut watch, STALL_SECS + 1.0, 2.0 * STALL_SECS, true));
+        assert!(watch.timed_out(2.0 * STALL_SECS + 1.0, true));
+        // Reported once, then counting starts over.
+        assert!(!watch.timed_out(2.0 * STALL_SECS + 2.0, true));
+    }
+
+    #[test]
+    fn stall_watch_ignores_time_the_window_was_not_drawing() {
+        let mut watch = StallWatch::default();
+        assert!(!watch.timed_out(0.0, true));
+        // Minimized for a minute: no frames could arrive meanwhile.
+        assert!(!watch.timed_out(60.0, true));
+        assert!(!wait(&mut watch, 61.0, 60.0 + STALL_SECS - 1.0, true));
+        assert!(watch.timed_out(60.0 + STALL_SECS, true));
+    }
+
+    #[test]
+    fn stalled_stream_fails_and_r_restarts_it() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+        app.playing = Some(1);
+        app.current = Some(1);
+        app.stream = StreamState::Opening;
+        for t in 0..=STALL_SECS as u32 {
+            app.check_stall(f64::from(t));
+        }
+        assert_eq!(app.stream, StreamState::Failed(STALL_MESSAGE.into()));
+        assert_eq!(app.playing, None);
+        // The stop it causes must not hide the message.
+        app.apply_event(PlayerEvent::Ended);
+        assert!(matches!(app.stream, StreamState::Failed(_)));
+
+        app.restart();
+        assert_eq!(app.pending_play, Some(1));
+    }
+
+    #[test]
+    fn idle_and_failed_streams_are_not_watched() {
+        let mut app = App::new(Playlist::default(), Epg::default(), vec![]);
+        app.check_stall(0.0);
+        app.check_stall(STALL_SECS * 3.0);
+        assert_eq!(app.stream, StreamState::Idle);
+        app.restart();
+        assert_eq!(app.pending_play, None, "nothing to restart");
     }
 
     #[test]

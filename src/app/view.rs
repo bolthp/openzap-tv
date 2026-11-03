@@ -286,7 +286,9 @@ impl App {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(egui::RichText::new(clock::local_hm(now)).heading());
-                if !matches!(self.stream, StreamState::Playing) && !self.status.is_empty() {
+                // Failures are already shown in the middle of the video.
+                let quiet = matches!(self.stream, StreamState::Playing | StreamState::Failed(_));
+                if !quiet && !self.status.is_empty() {
                     ui.weak(&self.status);
                 }
             });
@@ -344,7 +346,7 @@ impl App {
         // Rough widths of the two groups; below that the view group wraps
         // onto its own row (e.g. when the guide panel narrows the bar).
         let audio = if self.tracks.len() > 1 { 200.0 } else { 0.0 };
-        let one_row = ui.available_width() >= 300.0 + 330.0 + audio;
+        let one_row = ui.available_width() >= 340.0 + 330.0 + audio;
         let right_to_left = egui::Layout::right_to_left(egui::Align::Center);
         if one_row {
             ui.horizontal(|ui| {
@@ -376,6 +378,14 @@ impl App {
                 (false, Some(idx)) => self.pending_play = Some(idx),
                 (false, None) => {}
             }
+        }
+        if self.playing.or(self.current).is_some()
+            && ui
+                .button("↺")
+                .on_hover_text("Restart the stream (R)")
+                .clicked()
+        {
+            self.actions.push(Action::Restart);
         }
         let mute_icon = if self.muted { "🔇" } else { "🔊" };
         if ui.button(mute_icon).on_hover_text("Mute (M)").clicked() {

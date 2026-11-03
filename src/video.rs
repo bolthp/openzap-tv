@@ -38,6 +38,8 @@ struct State {
     /// Blank the target on the next draw (a new stream is opening, so the
     /// previous channel's last frame must not stay on screen).
     clear_pending: bool,
+    /// Frames drawn since the last `clear` (did the new stream show anything?).
+    frames_since_clear: u64,
     /// Last GL error from setting up the target, reported once.
     error: Option<String>,
     /// Present only when diagnostics are enabled (`--debug`).
@@ -90,7 +92,14 @@ impl VideoView {
 
     /// Blanks the picture until the next frame arrives.
     pub fn clear(&self) {
-        self.lock().clear_pending = true;
+        let mut state = self.lock();
+        state.clear_pending = true;
+        state.frames_since_clear = 0;
+    }
+
+    /// At least one frame of the current stream has been drawn.
+    pub fn has_frame(&self) -> bool {
+        self.lock().frames_since_clear > 0
     }
 
     #[cfg(test)]
@@ -181,7 +190,10 @@ impl State {
                 gl.clear(glow::COLOR_BUFFER_BIT);
             }
 
-            if render.update() || self.needs_render {
+            // `update` says whether mpv has a new frame; a resized target is
+            // redrawn too, but that is not new video.
+            let fresh = render.update();
+            if fresh || self.needs_render {
                 // mpv expects default GL state; egui_glow re-applies its own
                 // state after this callback returns.
                 gl.disable(glow::SCISSOR_TEST);
@@ -193,6 +205,9 @@ impl State {
                 match render.render(target.fbo.0.get(), width, height, glow::RGBA8 as i32) {
                     Ok(()) => {
                         self.needs_render = false;
+                        if fresh {
+                            self.frames_since_clear += 1;
+                        }
                         if let Some(diag) = &mut self.diagnostics {
                             diag.renders += 1;
                         }
