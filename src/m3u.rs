@@ -13,6 +13,8 @@ pub struct Channel {
     pub tvg_name: Option<String>,
     pub tvg_logo: Option<String>,
     pub group_title: Option<String>,
+    /// Channel number from `tvg-chno`, if the playlist assigns one.
+    pub tvg_chno: Option<u32>,
 }
 
 impl Channel {
@@ -101,7 +103,12 @@ fn parse_extinf(info: &str) -> Channel {
         ..Channel::default()
     };
     for (key, value) in parse_attrs(head) {
-        let slot = match key.to_ascii_lowercase().as_str() {
+        let key = key.to_ascii_lowercase();
+        if key == "tvg-chno" {
+            ch.tvg_chno = value.trim().parse().ok().filter(|&n| n > 0);
+            continue;
+        }
+        let slot = match key.as_str() {
             "tvg-id" => &mut ch.tvg_id,
             "tvg-name" => &mut ch.tvg_name,
             "tvg-logo" => &mut ch.tvg_logo,
@@ -156,6 +163,19 @@ fn parse_attrs(s: &str) -> Vec<(&str, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_channel_numbers() {
+        let pl = parse(
+            "#EXTM3U\n\
+             #EXTINF:-1 tvg-chno=\"12\",A\nhttp://example.com/a\n\
+             #EXTINF:-1 tvg-chno=\"x\",B\nhttp://example.com/b\n\
+             #EXTINF:-1 TVG-CHNO=\"0\",C\nhttp://example.com/c\n",
+        )
+        .unwrap();
+        let numbers: Vec<_> = pl.channels.iter().map(|c| c.tvg_chno).collect();
+        assert_eq!(numbers, [Some(12), None, None]);
+    }
 
     #[test]
     fn parses_full_entry() {

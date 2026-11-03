@@ -63,6 +63,8 @@ keys, so keep it private. Logos are cached in `~/.cache/openzap/logos` on Linux 
 |---|---|
 | click / double-click a channel | select / play it (right-click: favorites) |
 | `Enter` | play the selected channel |
+| digits | jump to the channel with that number (`tvg-chno`, or its position) |
+| `Backspace` | back to the previous channel |
 | `PageUp` / `PageDown` | previous / next channel |
 | `F` / double-click video | fullscreen |
 | `Esc` | leave fullscreen |

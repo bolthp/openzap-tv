@@ -13,7 +13,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use eframe::egui;
-use openzap::browse::{Filter, filter_channels, groups};
+use openzap::browse::{Filter, channel_numbers, filter_channels, find_number, groups};
 use openzap::config::{self, Config, Side, Theme};
 use openzap::debuglog::DebugLog;
 use openzap::epg::{Epg, EpgChannel, Programme};
@@ -179,6 +179,54 @@ impl StallWatch {
     }
 }
 
+/// Typed digits are taken as a channel number after this pause, seconds.
+const DIGIT_PAUSE_SECS: f64 = 1.5;
+const MAX_DIGITS: usize = 5;
+
+/// Channel number typed on the keyboard. Times are egui input times.
+#[derive(Debug, Default)]
+struct DigitEntry {
+    digits: String,
+    last: f64,
+}
+
+impl DigitEntry {
+    fn push(&mut self, digit: char, time: f64) {
+        if self.digits.len() < MAX_DIGITS {
+            self.digits.push(digit);
+        }
+        self.last = time;
+    }
+
+    /// Removes the last digit; false if there was nothing to remove.
+    fn back(&mut self, time: f64) -> bool {
+        self.last = time;
+        self.digits.pop().is_some()
+    }
+
+    fn cancel(&mut self) -> bool {
+        !std::mem::take(&mut self.digits).is_empty()
+    }
+
+    fn text(&self) -> Option<&str> {
+        (!self.digits.is_empty()).then_some(self.digits.as_str())
+    }
+
+    /// The number, once confirmed (Enter) or after a pause in typing.
+    fn finish(&mut self, time: f64, confirm: bool) -> Option<u32> {
+        if self.digits.is_empty() || !(confirm || time - self.last >= DIGIT_PAUSE_SECS) {
+            return None;
+        }
+        std::mem::take(&mut self.digits).parse().ok()
+    }
+
+    /// Seconds until the typed number is taken, while typing.
+    fn remaining(&self, time: f64) -> Option<f64> {
+        self.text()
+            .map(|_| (self.last + DIGIT_PAUSE_SECS - time).max(0.0))
+    }
+}
+
 /// A background load in progress, with the inputs it was started for.
 struct PendingLoad {
     rx: Receiver<Loaded>,
@@ -236,6 +284,11 @@ pub struct App {
     /// The programme guide panel.
     schedule: ScheduleView,
     stall: StallWatch,
+    /// Display number of each channel (same order as the playlist).
+    numbers: Vec<u32>,
+    digits: DigitEntry,
+    /// Channel played before `current` (`Backspace` goes back to it).
+    previous: Option<usize>,
     /// Channel last started; `R` restarts it, also after a failure.
     current: Option<usize>,
     /// Channel logos; created once the window's context is known.
@@ -312,7 +365,11 @@ impl App {
         let visible = filter_channels(&playlist, &Filter::default());
         let guide = GuideIndex::build(&playlist, &epg);
         let show_logos = has_logos(&guide, playlist.channels.len());
+        let numbers = channel_numbers(&playlist);
         Self {
+            numbers,
+            digits: DigitEntry::default(),
+            previous: None,
             playlist,
             epg,
             groups,
@@ -456,6 +513,8 @@ impl App {
 
     fn set_playlist(&mut self, playlist: Playlist) {
         self.groups = groups(&playlist);
+        self.numbers = channel_numbers(&playlist);
+        self.previous = None;
         self.playlist = playlist;
         self.group = None;
         // Reselect the channel played last time, if it is still there.
@@ -599,6 +658,9 @@ impl App {
                 self.config.last_channel = Some(channel.key().to_string());
                 self.pending_save = true;
                 self.playing = Some(idx);
+                if self.current != Some(idx) {
+                    self.previous = self.current;
+                }
                 self.current = Some(idx);
                 self.status = "Loading...".into();
                 self.apply_volume();
@@ -766,8 +828,32 @@ impl App {
         if pressed(egui::Key::F) {
             self.set_fullscreen(ctx, !is_fullscreen(ctx));
         }
-        // Esc closes the guide first, then leaves fullscreen.
-        if pressed(egui::Key::Escape) && !self.schedule.close() && is_fullscreen(ctx) {
+        const DIGITS: [(egui::Key, char); 10] = [
+            (egui::Key::Num0, '0'),
+            (egui::Key::Num1, '1'),
+            (egui::Key::Num2, '2'),
+            (egui::Key::Num3, '3'),
+            (egui::Key::Num4, '4'),
+            (egui::Key::Num5, '5'),
+            (egui::Key::Num6, '6'),
+            (egui::Key::Num7, '7'),
+            (egui::Key::Num8, '8'),
+            (egui::Key::Num9, '9'),
+        ];
+        for (key, digit) in DIGITS {
+            if pressed(key) {
+                self.digits.push(digit, time);
+            }
+        }
+        if pressed(egui::Key::Backspace) && !self.digits.back(time) {
+            self.go_back();
+        }
+        // Esc cancels typing, then closes the guide, then leaves fullscreen.
+        if pressed(egui::Key::Escape)
+            && !self.digits.cancel()
+            && !self.schedule.close()
+            && is_fullscreen(ctx)
+        {
             self.set_fullscreen(ctx, false);
         }
         if pressed(egui::Key::G) {
@@ -794,10 +880,15 @@ impl App {
         if pressed(egui::Key::A) {
             self.next_audio_track(time);
         }
-        if pressed(egui::Key::Enter)
-            && let Some(idx) = self.selected
-        {
-            self.pending_play = Some(idx);
+        if pressed(egui::Key::Enter) {
+            match self.digits.finish(time, true) {
+                Some(n) => self.jump_to_number(n, time),
+                None => {
+                    if let Some(idx) = self.selected {
+                        self.pending_play = Some(idx);
+                    }
+                }
+            }
         }
         if pressed(egui::Key::PageUp) {
             self.switch_channel(-1);
@@ -870,6 +961,37 @@ impl App {
             .as_ref()
             .and_then(|p| p.get_property("vid"))
             .is_none_or(|vid| vid != "no")
+    }
+
+    /// Takes a typed channel number once the user stops typing.
+    fn update_digits(&mut self, ctx: &egui::Context) {
+        let time = ctx.input(|i| i.time);
+        if let Some(n) = self.digits.finish(time, false) {
+            self.jump_to_number(n, time);
+        }
+        if let Some(secs) = self.digits.remaining(time) {
+            ctx.request_repaint_after(Duration::from_secs_f64(secs.max(0.05)));
+        }
+    }
+
+    fn jump_to_number(&mut self, n: u32, time: f64) {
+        match find_number(&self.numbers, n) {
+            Some(idx) => self.select_and_play(idx),
+            None => self.show_osd(format!("No channel {n}"), time),
+        }
+    }
+
+    /// Back to the channel played before the current one.
+    fn go_back(&mut self) {
+        if let Some(idx) = self.previous {
+            self.select_and_play(idx);
+        }
+    }
+
+    fn select_and_play(&mut self, idx: usize) {
+        self.selected = Some(idx);
+        self.pending_play = Some(idx);
+        self.scroll_to = Some(idx);
     }
 
     /// Plays the current (or last failed) channel again from scratch.
@@ -1060,6 +1182,7 @@ impl eframe::App for App {
         self.poll_player();
         self.check_stall(ui.input(|i| i.time));
         self.handle_shortcuts(ui.ctx());
+        self.update_digits(ui.ctx());
         self.apply_view(ui.ctx());
         let fullscreen = is_fullscreen(ui.ctx());
         self.fullscreen = fullscreen;
@@ -1661,6 +1784,55 @@ mod tests {
         assert_eq!(app.stream, StreamState::Idle);
         app.restart();
         assert_eq!(app.pending_play, None, "nothing to restart");
+    }
+
+    #[test]
+    fn digits_are_taken_after_a_pause_or_on_enter() {
+        let mut d = DigitEntry::default();
+        assert_eq!(d.finish(0.0, true), None, "nothing typed");
+        d.push('1', 0.0);
+        d.push('2', 1.0);
+        assert_eq!(d.text(), Some("12"));
+        assert_eq!(d.finish(1.0 + DIGIT_PAUSE_SECS - 0.1, false), None);
+        assert_eq!(d.finish(1.0 + DIGIT_PAUSE_SECS, false), Some(12));
+        assert_eq!(d.text(), None);
+
+        d.push('4', 5.0);
+        d.push('2', 5.1);
+        assert!(d.back(5.2));
+        assert_eq!(d.finish(5.3, true), Some(4), "Enter takes it right away");
+        assert!(!d.back(6.0), "nothing left to delete");
+        for _ in 0..10 {
+            d.push('9', 7.0);
+        }
+        assert_eq!(d.text(), Some("99999"), "capped");
+        assert!(d.cancel() && !d.cancel());
+    }
+
+    #[test]
+    fn typed_number_plays_that_channel_or_says_it_is_missing() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+        app.jump_to_number(3, 0.0);
+        assert_eq!((app.selected, app.pending_play), (Some(2), Some(2)));
+        assert_eq!(app.scroll_to, Some(2));
+        app.pending_play = None;
+        app.jump_to_number(42, 0.0);
+        assert_eq!(app.pending_play, None);
+        assert_eq!(app.osd.map(|(t, _)| t).as_deref(), Some("No channel 42"));
+    }
+
+    #[test]
+    fn backspace_returns_to_the_previous_channel() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+        app.go_back();
+        assert_eq!(app.pending_play, None, "no previous channel yet");
+        // What `play` records (it needs mpv, so set it up directly).
+        app.previous = Some(0);
+        app.current = Some(2);
+        app.go_back();
+        assert_eq!((app.selected, app.pending_play), (Some(0), Some(0)));
     }
 
     #[test]

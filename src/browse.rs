@@ -5,6 +5,22 @@ use std::collections::BTreeSet;
 use crate::epg::Programme;
 use crate::m3u::Playlist;
 
+/// Display number of each channel: `tvg-chno` if the playlist sets one,
+/// otherwise its position in the playlist (from 1).
+pub fn channel_numbers(playlist: &Playlist) -> Vec<u32> {
+    playlist
+        .channels
+        .iter()
+        .enumerate()
+        .map(|(i, c)| c.tvg_chno.unwrap_or(i as u32 + 1))
+        .collect()
+}
+
+/// Index of the channel numbered `n` (the first, if several share it).
+pub fn find_number(numbers: &[u32], n: u32) -> Option<usize> {
+    numbers.iter().position(|&x| x == n)
+}
+
 /// Sorted, de-duplicated list of group names (channels without a group are skipped).
 pub fn groups(playlist: &Playlist) -> Vec<String> {
     let set: BTreeSet<&str> = playlist
@@ -100,6 +116,22 @@ mod tests {
             desc: None,
             category: None,
         }
+    }
+
+    #[test]
+    fn numbers_come_from_tvg_chno_or_position() {
+        let mut pl = Playlist::default();
+        for chno in [None, Some(101), None] {
+            pl.channels.push(Channel {
+                tvg_chno: chno,
+                ..Channel::default()
+            });
+        }
+        let numbers = channel_numbers(&pl);
+        assert_eq!(numbers, [1, 101, 3]);
+        assert_eq!(find_number(&numbers, 101), Some(1));
+        assert_eq!(find_number(&numbers, 3), Some(2));
+        assert_eq!(find_number(&numbers, 2), None);
     }
 
     #[test]

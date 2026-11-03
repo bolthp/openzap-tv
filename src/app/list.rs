@@ -286,6 +286,24 @@ impl App {
             painter.rect_filled(stripe, 2.0, accent);
         }
         let mut inner = rect.shrink2(egui::vec2(8.0, 5.0));
+        // Channel number, right-aligned in a column wide enough for the
+        // largest number in the playlist.
+        let small = egui::TextStyle::Small.resolve(ui.style());
+        let widest = self.numbers.iter().max().copied().unwrap_or(0).max(99);
+        let column = painter
+            .layout_no_wrap(widest.to_string(), small.clone(), weak)
+            .size()
+            .x;
+        if let Some(n) = self.numbers.get(idx) {
+            let number = painter.layout_no_wrap(n.to_string(), small.clone(), weak);
+            let y = inner.center().y - number.size().y / 2.0;
+            painter.galley(
+                egui::pos2(inner.left() + column - number.size().x, y),
+                number,
+                weak,
+            );
+        }
+        inner.min.x += column + 8.0;
         if self.show_logos {
             let logo = egui::Rect::from_min_size(
                 inner.min,
@@ -297,7 +315,6 @@ impl App {
         }
 
         let body = egui::TextStyle::Body.resolve(ui.style());
-        let small = egui::TextStyle::Small.resolve(ui.style());
         let mut x = inner.left();
         if self.is_favorite(idx) {
             let star = painter.layout_no_wrap("★ ".into(), body.clone(), STAR);

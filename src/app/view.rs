@@ -98,6 +98,19 @@ impl App {
             self.stream_info(ui, &painter, rect, time);
         }
         self.osd_message(ui, &painter, rect, time);
+        if let Some(digits) = self.digits.text() {
+            // The channel number being typed, large, where the OSD goes.
+            let corner = rect.right_top() + egui::vec2(-16.0, 16.0);
+            let font = egui::FontId::proportional(40.0);
+            let galley = painter.layout_no_wrap(format!("{digits}_"), font, egui::Color32::WHITE);
+            let text_rect = egui::Align2::RIGHT_TOP.anchor_size(corner, galley.size());
+            painter.rect_filled(
+                text_rect.expand(12.0),
+                8.0,
+                egui::Color32::from_black_alpha(190),
+            );
+            painter.galley(text_rect.min, galley, egui::Color32::WHITE);
+        }
 
         // Mouse activity over the video brings the bar up.
         let pointer_over = ui.rect_contains_pointer(rect);
