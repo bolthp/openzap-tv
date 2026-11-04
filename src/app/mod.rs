@@ -319,6 +319,8 @@ pub struct App {
     loading: Option<PendingLoad>,
     /// Start loading on the first frame (a repaint handle is needed).
     autoload: bool,
+    /// The window geometry was written to the debug log.
+    window_logged: bool,
     /// Play the restored last channel once the startup load finishes.
     resume_on_load: bool,
 }
@@ -421,6 +423,7 @@ impl App {
             epg_input: String::new(),
             loading: None,
             autoload: false,
+            window_logged: false,
             resume_on_load: false,
             video: VideoView::default(),
             ctx: egui::Context::default(),
@@ -911,6 +914,22 @@ impl App {
         }
     }
 
+    /// Writes the window geometry to the debug log (`--debug`).
+    fn log_window(&self, when: &str, ctx: &egui::Context) {
+        if self.log.is_none() {
+            return;
+        }
+        let info = ctx.input(|i| i.viewport().clone());
+        self.dlog(&format!(
+            "window at {when}: inner {:?}, outer {:?}, monitor {:?}, scale {:?}, wayland {}",
+            info.inner_rect,
+            info.outer_rect,
+            info.monitor_size,
+            info.native_pixels_per_point,
+            platform::is_wayland(),
+        ));
+    }
+
     /// Opens a file dialog the settings asked for, and puts a chosen file
     /// into its field once the dialog is done.
     fn update_file_pick(&mut self, ctx: &egui::Context) {
@@ -1229,6 +1248,8 @@ impl eframe::App for App {
     /// The GL context is still alive here, so mpv's renderer can be freed
     /// properly before the window goes away.
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        let ctx = self.ctx.clone();
+        self.log_window("exit", &ctx);
         self.release_player();
     }
 
@@ -1240,6 +1261,10 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let now = unix_now();
+        if !self.window_logged {
+            self.window_logged = true;
+            self.log_window("start", ui.ctx());
+        }
         if std::mem::take(&mut self.autoload) {
             self.start_load(ui.ctx());
         }
