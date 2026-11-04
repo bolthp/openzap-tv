@@ -129,6 +129,8 @@ impl Config {
     /// Lenient: unknown keys, comments and malformed lines are ignored.
     pub fn parse(text: &str) -> Self {
         let mut cfg = Config::default();
+        // Notepad and PowerShell may save UTF-8 with a byte-order mark.
+        let text = text.strip_prefix('\u{feff}').unwrap_or(text);
         for line in text.lines() {
             let line = line.trim();
             if line.starts_with('#') {
@@ -398,6 +400,13 @@ mod tests {
     fn duplicate_favorites_collapse() {
         let cfg = Config::parse("favorite=a\nfavorite=b\nfavorite=a\nfavorite=\n");
         assert_eq!(cfg.favorites.len(), 2);
+    }
+
+    #[test]
+    fn byte_order_mark_is_ignored() {
+        let cfg = Config::parse("\u{feff}playlist=/data/list.m3u\r\nvolume=10\r\n");
+        assert_eq!(cfg.playlist.as_deref(), Some("/data/list.m3u"));
+        assert_eq!(cfg.volume, 10.0);
     }
 
     #[test]
