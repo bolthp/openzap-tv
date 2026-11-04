@@ -48,6 +48,10 @@ fn channel_filter(playlist: &Playlist) -> ChannelFilter {
     for c in &playlist.channels {
         if let Some(id) = &c.tvg_id {
             filter.ids.insert(normalize_name(id));
+            // Also the id without an iptv-org feed ("x.es@SD" -> "x.es").
+            if let Some((base, _)) = id.split_once('@') {
+                filter.ids.insert(normalize_name(base));
+            }
         }
         for name in [c.tvg_name.as_deref(), Some(c.name.as_str())]
             .into_iter()
@@ -139,6 +143,12 @@ mod tests {
         assert!(f.ids.contains("id.one"));
         assert!(f.names.contains("alt name"));
         assert!(f.names.contains("shown name"));
+
+        let feed =
+            m3u::parse("#EXTM3U\n#EXTINF:-1 tvg-id=\"La1.es@SD\",La 1\nhttp://example.com/1\n")
+                .unwrap();
+        let f = channel_filter(&feed);
+        assert!(f.ids.contains("la1.es@sd") && f.ids.contains("la1.es"));
     }
 
     #[test]

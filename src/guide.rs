@@ -153,11 +153,12 @@ fn match_channel<'a>(
     by_id: &HashMap<String, &'a str>,
     by_name: &HashMap<String, &'a str>,
 ) -> Option<&'a str> {
-    if let Some(found) = channel
-        .tvg_id
-        .as_deref()
-        .and_then(|id| by_id.get(&norm(id)))
-    {
+    // iptv-org playlists add a feed to the id ("24Horas.es@SD") that their
+    // guides leave out ("24Horas.es"), so the id without it is tried too.
+    if let Some(found) = channel.tvg_id.as_deref().and_then(|id| {
+        let base = id.split_once('@').map_or(id, |(base, _)| base);
+        by_id.get(&norm(id)).or_else(|| by_id.get(&norm(base)))
+    }) {
         return Some(found);
     }
     [channel.tvg_name.as_deref(), Some(channel.name.as_str())]
@@ -292,6 +293,18 @@ mod tests {
         assert!(idx.schedule(&epg, 5).is_empty());
         let (idx, epg) = single(channel("Unknown", None), sample_epg());
         assert!(idx.schedule(&epg, 0).is_empty());
+    }
+
+    #[test]
+    fn tvg_id_feed_suffix_is_optional() {
+        let (idx, _) = single(channel("Whatever", Some("news.example@HD")), sample_epg());
+        assert_eq!(idx.epg_id(0), Some("news.example"));
+        // An exact id with "@" in the guide still wins.
+        let mut epg = sample_epg();
+        epg.channels
+            .push(epg_channel("news.example@HD", "News HD feed"));
+        let (idx, _) = single(channel("Whatever", Some("news.example@HD")), epg);
+        assert_eq!(idx.epg_id(0), Some("news.example@HD"));
     }
 
     #[test]
