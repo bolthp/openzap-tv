@@ -69,4 +69,6 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
 ## Packaging
 
 - [ ] Linux AppImage bundling libmpv (today the system `libmpv2` is required).
+      Also fixes the generic taskbar icon on the very first start (the desktop
+      entry is written during that start).
 - [ ] macOS build, once someone can test it.

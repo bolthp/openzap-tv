@@ -4,6 +4,11 @@ Desktop IPTV player for Windows, Linux and macOS: HLS/HTTP streams, M3U playlist
 
 **Status:** early development.
 
+![OpenZap with a public Spanish playlist (iptv-org) and its programme guide, dark theme](docs/screenshot.png)
+
+<sub>Screenshot: public channels from [iptv-org](https://github.com/iptv-org/iptv) with the
+[iptv-epg.org](https://iptv-epg.org) guide.</sub>
+
 ## Features
 
 - Open an M3U playlist and an optional XMLTV guide from a file or an HTTP(S) URL (`.gz` is supported)
@@ -35,10 +40,6 @@ On Linux, OpenZap adds itself to the application menu on first start
 (`~/.local/share/applications/openzap.desktop` and its icon), so launchers and
 the taskbar show its icon; the entry follows the executable if you move it.
 Delete those two files to remove it.
-
-On Wayland (the default on Ubuntu) an application cannot keep its own window
-on top; use the window menu instead (`Alt+Space` or right-click the title bar →
-*Always on Top*).
 
 ## Usage
 
@@ -84,6 +85,16 @@ and the controls; it hides again after a few seconds.
 In fullscreen (or with the list hidden), moving the mouse to the window edge
 where the list belongs slides it in over the video; it slides away when the
 mouse leaves it, unless pinned with `L` or the list button.
+
+## Known issues
+
+- **Wayland (the default on Ubuntu):** an application can neither keep its own
+  window on top nor read or set its position, so *Always on top* is disabled
+  (use the window menu: `Alt+Space` or right-click the title bar → *Always on
+  Top*) and the window opens where the desktop places it; its size is kept.
+  Both work in an X11 session, on Windows and on macOS.
+- **Linux, first start:** the taskbar may show a generic icon until the second
+  start (the desktop entry is created on the first one). An AppImage will fix this.
 
 ## Troubleshooting
 
