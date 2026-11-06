@@ -58,6 +58,8 @@ pub struct Fetched<T> {
     pub data: T,
     /// When it was downloaded (Unix seconds); `None` for local files.
     pub downloaded_at: Option<i64>,
+    /// Read from the copy saved earlier, not downloaded now.
+    pub from_saved: bool,
     /// The download failed, so the saved copy was used: why it failed.
     pub stale: Option<String>,
 }
@@ -173,6 +175,7 @@ impl Fetching {
             return Ok(Fetched {
                 data,
                 downloaded_at: None,
+                from_saved: false,
                 stale: None,
             });
         };
@@ -195,6 +198,7 @@ impl Fetching {
             return Ok(Fetched {
                 data,
                 downloaded_at: saved_at,
+                from_saved: true,
                 stale: None,
             });
         }
@@ -202,6 +206,7 @@ impl Fetching {
             Ok(data) => Ok(Fetched {
                 data,
                 downloaded_at: Some(self.now),
+                from_saved: false,
                 stale: None,
             }),
             Err(e) => match saved_at.filter(|_| !cancel.load(Ordering::Relaxed)) {
@@ -209,6 +214,7 @@ impl Fetching {
                     Ok(Fetched {
                         data,
                         downloaded_at: Some(at),
+                        from_saved: true,
                         stale: Some(e),
                     })
                 }),
@@ -536,6 +542,7 @@ mod tests {
         let ev = events(&req);
         let first = playlist_of(&ev).as_ref().unwrap();
         assert_eq!(first.downloaded_at, Some(req.now));
+        assert!(!first.from_saved);
         let saved: Vec<_> = std::fs::read_dir(&cache).unwrap().collect();
         assert_eq!(saved.len(), 1, "one saved copy, no leftovers");
 
@@ -544,7 +551,7 @@ mod tests {
         let ev = events(&req);
         let again = playlist_of(&ev).as_ref().unwrap();
         assert_eq!(again.data.channels.len(), 1);
-        assert!(again.stale.is_none());
+        assert!(again.from_saved && again.stale.is_none());
         assert!(
             again
                 .downloaded_at
@@ -565,6 +572,7 @@ mod tests {
             let ev = events(&req);
             let fetched = playlist_of(&ev).as_ref().unwrap();
             assert_eq!(fetched.data.channels.len(), 1);
+            assert!(fetched.from_saved);
             let why = fetched.stale.as_deref().unwrap();
             assert!(!why.contains("fakekey"), "leaked: {why}");
         }

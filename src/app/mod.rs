@@ -1471,12 +1471,12 @@ impl eframe::App for App {
     }
 }
 
-/// " (saved copy from …)" when the data did not come fresh from a download.
+/// Where loaded data came from, for the debug log.
 fn source_note<T>(fetched: &Fetched<T>) -> String {
-    match fetched.downloaded_at {
-        None => " (file)".to_string(),
-        Some(at) if at < unix_now() - 60 => format!(" (saved copy from {})", when(at)),
-        Some(_) => " (downloaded)".to_string(),
+    match (fetched.downloaded_at, fetched.from_saved) {
+        (None, _) => " (file)".to_string(),
+        (Some(at), true) => format!(" (saved copy from {})", when(at)),
+        (Some(_), false) => " (downloaded)".to_string(),
     }
 }
 
@@ -1678,6 +1678,7 @@ mod tests {
         Fetched {
             data,
             downloaded_at: None,
+            from_saved: false,
             stale: None,
         }
     }
@@ -1822,11 +1823,21 @@ mod tests {
         let fetched = Fetched {
             data: playlist,
             downloaded_at: Some(1_000),
+            from_saved: true,
             stale: Some("network error".into()),
         };
         app.apply_playlist(Ok(fetched), "http://example.com/l.m3u", "");
         assert_eq!(app.playlist.channels.len(), 3);
         assert_eq!(app.playlist_downloaded_at, Some(1_000));
+        assert!(
+            source_note(&Fetched {
+                data: (),
+                downloaded_at: Some(unix_now()),
+                from_saved: true,
+                stale: None,
+            })
+            .starts_with(" (saved copy from Today")
+        );
         assert!(
             app.notices[0].starts_with("Playlist: network error; showing the copy saved "),
             "{:?}",
