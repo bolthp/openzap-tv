@@ -1,6 +1,7 @@
 //! OpenZap core library: playlist parsing and helpers.
 
 pub mod browse;
+pub mod cache;
 pub mod clock;
 pub mod config;
 pub mod debuglog;

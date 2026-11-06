@@ -135,8 +135,9 @@ impl App {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.heading("OpenZap");
-            if self.loading.is_some() {
+            if let Some(text) = self.loading_text() {
                 ui.spinner();
+                ui.weak(text);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("⚙").on_hover_text("Settings").clicked() {

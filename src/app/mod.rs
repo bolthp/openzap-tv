@@ -9,6 +9,7 @@ mod view;
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -18,11 +19,12 @@ use openzap::config::{self, Config, Side, Theme};
 use openzap::debuglog::DebugLog;
 use openzap::epg::{Epg, EpgChannel, Programme};
 use openzap::guide::GuideIndex;
-use openzap::loader::{self, Loaded};
+use openzap::loader::{self, Fetch, Fetched, LoadEvent};
 use openzap::m3u::{Channel, Playlist};
 use openzap::platform;
 use openzap::player::{AspectMode, Player, PlayerEvent, PropertyKind, PropertyValue};
 use openzap::tracks::{self, Track};
+use openzap::{cache, clock};
 
 use crate::filepick::{self, Pick, PickState, PickTarget};
 use crate::settings::{self, Outcome, SettingsDraft};
@@ -229,11 +231,26 @@ impl DigitEntry {
     }
 }
 
+/// After a failed update while running, the next try waits this long, seconds.
+const UPDATE_RETRY_SECS: i64 = 3600;
+
 /// A background load in progress, with the inputs it was started for.
 struct PendingLoad {
-    rx: Receiver<Loaded>,
+    rx: Receiver<LoadEvent>,
+    /// Set to stop the load (a newer one replaces it).
+    cancel: Arc<AtomicBool>,
     playlist_src: String,
     epg_src: String,
+    /// Still to come.
+    playlist_due: bool,
+    epg_due: bool,
+}
+
+impl Drop for PendingLoad {
+    /// A replaced or abandoned load stops downloading.
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
 }
 
 pub struct App {
@@ -323,6 +340,14 @@ pub struct App {
     window_logged: bool,
     /// Play the restored last channel once the startup load finishes.
     resume_on_load: bool,
+    /// Where saved copies of downloaded sources go (`None`: not saved).
+    sources_cache: Option<PathBuf>,
+    /// When the playlist and guide were downloaded (Unix seconds); `None`
+    /// for local files and before the first load.
+    playlist_downloaded_at: Option<i64>,
+    epg_downloaded_at: Option<i64>,
+    /// Last time a load started (Unix seconds), to space out update retries.
+    load_started_at: i64,
 }
 
 impl App {
@@ -356,6 +381,7 @@ impl App {
         app.volume = config.volume;
         app.on_top_supported = platform::can_keep_on_top(platform::is_wayland());
         app.autoload = !playlist_input.is_empty();
+        app.sources_cache = cache::default_root().map(|root| root.join("sources"));
         app.resume_on_load = config.resume_last;
         // First start: nothing to show yet, so ask for a playlist right away.
         if playlist_input.is_empty() {
@@ -425,6 +451,10 @@ impl App {
             autoload: false,
             window_logged: false,
             resume_on_load: false,
+            sources_cache: None,
+            playlist_downloaded_at: None,
+            epg_downloaded_at: None,
+            load_started_at: 0,
             video: VideoView::default(),
             ctx: egui::Context::default(),
             log: None,
@@ -433,67 +463,127 @@ impl App {
         }
     }
 
-    /// Starts loading the current inputs on a background thread.
-    fn start_load(&mut self, ctx: &egui::Context) {
-        if self.loading.is_some() {
-            return;
-        }
-        let playlist_src = self.playlist_input.trim().to_string();
-        let epg_src = self.epg_input.trim().to_string();
+    /// Loads the startup sources as their update policies say.
+    fn load_by_policy(&mut self, ctx: &egui::Context) {
+        let playlist = Fetch::Policy(self.config.playlist_update);
+        let epg = Fetch::Policy(self.config.epg_update);
+        self.start_load(ctx, playlist, epg);
+    }
+
+    /// Starts loading the current inputs on a background thread, replacing
+    /// (and stopping) a load still in progress.
+    fn start_load(&mut self, ctx: &egui::Context, playlist: Fetch, epg: Fetch) {
+        let now = unix_now();
+        let request = loader::Request {
+            playlist: self.playlist_input.trim().to_string(),
+            epg: self.epg_input.trim().to_string(),
+            playlist_fetch: playlist,
+            epg_fetch: epg,
+            now,
+            cache_dir: self.sources_cache.clone(),
+            // Used when the playlist is not reloaded or fails; without one
+            // all guide channels are kept.
+            channels: (!self.playlist.channels.is_empty())
+                .then(|| loader::channel_filter(&self.playlist)),
+        };
         let (tx, rx) = mpsc::channel();
-        let (p, e, ctx) = (playlist_src.clone(), epg_src.clone(), ctx.clone());
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (stop, ctx) = (cancel.clone(), ctx.clone());
         std::thread::spawn(move || {
-            let loaded = loader::load_sources(&p, &e, unix_now());
-            // The receiver is gone if the app was closed meanwhile; that's fine.
-            let _ = tx.send(loaded);
-            ctx.request_repaint(); // wake the UI to pick up the result
+            loader::run(&request, &stop, |event| {
+                // The receiver is gone if the app was closed meanwhile; that's fine.
+                let _ = tx.send(event);
+                ctx.request_repaint(); // wake the UI to pick up the result
+            });
         });
         self.notices.clear();
+        self.load_started_at = now;
         self.loading = Some(PendingLoad {
             rx,
-            playlist_src,
-            epg_src,
+            cancel,
+            playlist_src: self.playlist_input.trim().to_string(),
+            epg_src: self.epg_input.trim().to_string(),
+            playlist_due: playlist != Fetch::Keep,
+            epg_due: epg != Fetch::Keep,
         });
     }
 
     fn poll_loading(&mut self) {
-        let Some(pending) = &self.loading else {
-            return;
-        };
-        match pending.rx.try_recv() {
-            Ok(loaded) => {
-                if let Some(done) = self.loading.take() {
-                    self.apply_loaded(loaded, &done.playlist_src, &done.epg_src);
+        while let Some(pending) = &mut self.loading {
+            match pending.rx.try_recv() {
+                Ok(LoadEvent::Playlist(result)) => {
+                    pending.playlist_due = false;
+                    let (p, e) = (pending.playlist_src.clone(), pending.epg_src.clone());
+                    self.apply_playlist(result, &p, &e);
                 }
-            }
-            Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => {
-                self.loading = None;
-                self.notices.push("Loading stopped unexpectedly".into());
+                Ok(LoadEvent::Epg(result)) => {
+                    pending.epg_due = false;
+                    self.apply_epg(result);
+                }
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => {
+                    if pending.playlist_due || pending.epg_due {
+                        self.notices.push("Loading stopped unexpectedly".into());
+                    }
+                    self.loading = None;
+                }
             }
         }
     }
 
-    fn apply_loaded(&mut self, loaded: Loaded, playlist_src: &str, epg_src: &str) {
-        self.dlog(&format!(
-            "loaded: playlist {}, epg {}",
-            match &loaded.playlist {
-                Ok(p) => format!("{} channels", p.channels.len()),
-                Err(e) => format!("error: {e}"),
-            },
-            match &loaded.epg {
-                None => "none".to_string(),
-                Some(Ok(e)) => format!(
-                    "{} channels, {} programmes",
-                    e.channels.len(),
-                    e.programmes.len()
-                ),
-                Some(Err(e)) => format!("error: {e}"),
+    /// What is still loading, for the list header.
+    fn loading_text(&self) -> Option<&'static str> {
+        let pending = self.loading.as_ref()?;
+        Some(if pending.playlist_due {
+            "Loading playlist…"
+        } else {
+            "Loading guide…"
+        })
+    }
+
+    /// Starts updating what is due while the app runs (see `update_due`).
+    /// After a failed try (the saved copy stays in use) it waits a while.
+    fn check_updates(&mut self, ctx: &egui::Context, now: i64) {
+        if self.loading.is_some() || now - self.load_started_at < UPDATE_RETRY_SECS {
+            return;
+        }
+        let due = |policy, at| {
+            if loader::update_due(policy, at, now) {
+                Fetch::Download
+            } else {
+                Fetch::Keep
             }
-        ));
-        match loaded.playlist {
-            Ok(playlist) => {
-                self.set_playlist(playlist);
+        };
+        let playlist = due(self.config.playlist_update, self.playlist_downloaded_at);
+        let epg = due(self.config.epg_update, self.epg_downloaded_at);
+        if playlist != Fetch::Keep || epg != Fetch::Keep {
+            self.dlog(&format!("updating: playlist {playlist:?}, guide {epg:?}"));
+            self.start_load(ctx, playlist, epg);
+            self.load_started_at = now;
+        }
+    }
+
+    fn apply_playlist(
+        &mut self,
+        result: Result<Fetched<Playlist>, String>,
+        playlist_src: &str,
+        epg_src: &str,
+    ) {
+        self.dlog(&match &result {
+            Ok(f) => format!(
+                "loaded playlist: {} channels{}",
+                f.data.channels.len(),
+                source_note(f)
+            ),
+            Err(e) => format!("playlist error: {e}"),
+        });
+        match result {
+            Ok(fetched) => {
+                if let Some(why) = &fetched.stale {
+                    self.notices.push(stale_notice("Playlist", why, &fetched));
+                }
+                self.playlist_downloaded_at = fetched.downloaded_at;
+                self.set_playlist(fetched.data);
                 if std::mem::take(&mut self.resume_on_load) {
                     self.pending_play = self.selected;
                 }
@@ -503,10 +593,33 @@ impl App {
             }
             Err(e) => self.notices.push(format!("Playlist: {e}")),
         }
-        match loaded.epg {
-            Some(Ok(epg)) => self.epg = epg,
+        self.rebuild_guide();
+    }
+
+    fn apply_epg(&mut self, result: Option<Result<Fetched<Epg>, String>>) {
+        self.dlog(&match &result {
+            None => "guide: none".to_string(),
+            Some(Ok(f)) => format!(
+                "loaded guide: {} channels, {} programmes{}",
+                f.data.channels.len(),
+                f.data.programmes.len(),
+                source_note(f)
+            ),
+            Some(Err(e)) => format!("guide error: {e}"),
+        });
+        match result {
+            Some(Ok(fetched)) => {
+                if let Some(why) = &fetched.stale {
+                    self.notices.push(stale_notice("EPG", why, &fetched));
+                }
+                self.epg_downloaded_at = fetched.downloaded_at;
+                self.epg = fetched.data;
+            }
             Some(Err(e)) => self.notices.push(format!("EPG: {e}")),
-            None => self.epg = Epg::default(),
+            None => {
+                self.epg = Epg::default();
+                self.epg_downloaded_at = None;
+            }
         }
         self.rebuild_guide();
     }
@@ -522,18 +635,33 @@ impl App {
         self.logos.as_ref()?.texture(&self.ctx, url)
     }
 
+    /// Takes a new playlist. Channels referred to (selected, playing, …)
+    /// are found again by key; an update may reorder or drop channels.
     fn set_playlist(&mut self, playlist: Playlist) {
+        let keys = |idx: Option<usize>| -> Option<String> {
+            Some(self.playlist.channels.get(idx?)?.key().to_string())
+        };
+        let (selected, playing) = (keys(self.selected), keys(self.playing));
+        let (current, previous) = (keys(self.current), keys(self.previous));
         self.groups = groups(&playlist);
         self.numbers = channel_numbers(&playlist);
-        self.previous = None;
         self.playlist = playlist;
-        self.group = None;
-        // Reselect the channel played last time, if it is still there.
-        self.selected = self
-            .config
-            .last_channel
-            .as_deref()
-            .and_then(|key| self.playlist.channels.iter().position(|c| c.key() == key));
+        let find = |key: Option<String>| -> Option<usize> {
+            let key = key?;
+            self.playlist.channels.iter().position(|c| c.key() == key)
+        };
+        // Else the channel played last time, if it is still there.
+        self.selected = find(selected).or_else(|| find(self.config.last_channel.clone()));
+        self.playing = find(playing);
+        self.current = find(current);
+        self.previous = find(previous);
+        if self
+            .group
+            .as_ref()
+            .is_some_and(|g| !self.groups.contains(g))
+        {
+            self.group = None;
+        }
         self.refilter();
     }
 
@@ -571,6 +699,8 @@ impl App {
         self.playlist_input = playlist;
         self.epg_input = epg;
         self.config.resume_last = draft.resume_last;
+        self.config.playlist_update = draft.playlist_update;
+        self.config.epg_update = draft.epg_update;
         if draft.theme != self.config.view.theme {
             self.config.view.theme = draft.theme;
             self.view_pending = true;
@@ -1076,7 +1206,7 @@ impl App {
                         &self.config,
                     ));
                 }
-                Action::Reload => self.start_load(ctx),
+                Action::Reload => self.start_load(ctx, Fetch::Download, Fetch::Download),
             }
         }
     }
@@ -1279,9 +1409,10 @@ impl eframe::App for App {
             self.log_window("start", ui.ctx());
         }
         if std::mem::take(&mut self.autoload) {
-            self.start_load(ui.ctx());
+            self.load_by_policy(ui.ctx());
         }
         self.poll_loading();
+        self.check_updates(ui.ctx(), now);
         self.poll_player();
         self.check_stall(ui.input(|i| i.time));
         self.handle_shortcuts(ui.ctx());
@@ -1319,7 +1450,7 @@ impl eframe::App for App {
             if let (Outcome::Save, Some(draft)) = (outcome, draft)
                 && self.apply_settings(draft)
             {
-                self.start_load(&ctx);
+                self.load_by_policy(&ctx);
             }
         }
         if let Some(idx) = self.pending_play.take() {
@@ -1338,6 +1469,29 @@ impl eframe::App for App {
         let delay = if busy { 250 } else { 15_000 };
         ui.ctx().request_repaint_after(Duration::from_millis(delay));
     }
+}
+
+/// " (saved copy from …)" when the data did not come fresh from a download.
+fn source_note<T>(fetched: &Fetched<T>) -> String {
+    match fetched.downloaded_at {
+        None => " (file)".to_string(),
+        Some(at) if at < unix_now() - 60 => format!(" (saved copy from {})", when(at)),
+        Some(_) => " (downloaded)".to_string(),
+    }
+}
+
+/// "EPG: network error; showing the copy saved Today 08:15".
+fn stale_notice<T>(what: &str, why: &str, fetched: &Fetched<T>) -> String {
+    let saved = fetched
+        .downloaded_at
+        .map_or_else(String::new, |at| format!(" saved {}", when(at)));
+    format!("{what}: {why}; showing the copy{saved}")
+}
+
+/// "Today 08:15", "Thu 5 Nov 22:40".
+fn when(unix: i64) -> String {
+    let day = clock::day_label(clock::local_day(unix), clock::local_day(unix_now()));
+    format!("{day} {}", clock::local_hm(unix))
 }
 
 fn unix_now() -> i64 {
@@ -1465,6 +1619,7 @@ pub fn demo_data(now: i64) -> (Playlist, Epg) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openzap::config::UpdatePolicy;
 
     #[test]
     fn demo_data_is_consistent() {
@@ -1508,8 +1663,30 @@ mod tests {
         assert!(!app.video.is_attached());
     }
 
+    /// Both results of a load, as the loader sends them one by one.
+    struct Loaded {
+        playlist: Result<Playlist, String>,
+        epg: Option<Result<Epg, String>>,
+    }
+
     fn loaded(playlist: Result<Playlist, String>, epg: Option<Result<Epg, String>>) -> Loaded {
         Loaded { playlist, epg }
+    }
+
+    /// Data read from a local file.
+    fn local<T>(data: T) -> Fetched<T> {
+        Fetched {
+            data,
+            downloaded_at: None,
+            stale: None,
+        }
+    }
+
+    impl App {
+        fn apply_loaded(&mut self, loaded: Loaded, playlist_src: &str, epg_src: &str) {
+            self.apply_playlist(loaded.playlist.map(local), playlist_src, epg_src);
+            self.apply_epg(loaded.epg.map(|r| r.map(local)));
+        }
     }
 
     #[test]
@@ -1584,7 +1761,7 @@ mod tests {
         let mut app = App::new(Playlist::default(), Epg::default(), vec![]);
         app.playlist_input = "/nonexistent/openzap.m3u".into();
 
-        app.start_load(&ctx);
+        app.start_load(&ctx, Fetch::Download, Fetch::Download);
         assert!(app.loading.is_some());
         for _ in 0..200 {
             app.poll_loading();
@@ -1596,6 +1773,108 @@ mod tests {
         assert!(app.loading.is_none(), "load did not finish");
         assert_eq!(app.notices.len(), 1);
         assert!(app.notices[0].starts_with("Playlist: cannot read"));
+    }
+
+    #[test]
+    fn a_new_load_stops_the_one_in_progress() {
+        let ctx = egui::Context::default();
+        let mut app = App::new(Playlist::default(), Epg::default(), vec![]);
+        app.playlist_input = "/nonexistent/a.m3u".into();
+        app.start_load(&ctx, Fetch::Download, Fetch::Download);
+        let first = app.loading.as_ref().unwrap().cancel.clone();
+        app.playlist_input = "/nonexistent/b.m3u".into();
+        app.start_load(&ctx, Fetch::Download, Fetch::Keep);
+        assert!(first.load(Ordering::Relaxed), "old load cancelled");
+        let pending = app.loading.as_ref().unwrap();
+        assert_eq!(pending.playlist_src, "/nonexistent/b.m3u");
+        assert!(pending.playlist_due && !pending.epg_due);
+    }
+
+    #[test]
+    fn the_playlist_shows_before_the_guide_arrives() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(Playlist::default(), Epg::default(), vec![]);
+        let (tx, rx) = mpsc::channel();
+        app.loading = Some(PendingLoad {
+            rx,
+            cancel: Arc::new(AtomicBool::new(false)),
+            playlist_src: "p".into(),
+            epg_src: "e".into(),
+            playlist_due: true,
+            epg_due: true,
+        });
+        assert_eq!(app.loading_text(), Some("Loading playlist…"));
+        tx.send(LoadEvent::Playlist(Ok(local(playlist)))).unwrap();
+        app.poll_loading();
+        assert_eq!(app.playlist.channels.len(), 3);
+        assert_eq!(app.loading_text(), Some("Loading guide…"));
+        tx.send(LoadEvent::Epg(Some(Ok(local(epg))))).unwrap();
+        drop(tx);
+        app.poll_loading();
+        assert!(app.loading.is_none() && app.notices.is_empty());
+        assert!(!app.epg.programmes.is_empty());
+    }
+
+    #[test]
+    fn a_saved_copy_in_use_is_reported() {
+        let (playlist, _) = demo_data(0);
+        let mut app = App::new(Playlist::default(), Epg::default(), vec![]);
+        let fetched = Fetched {
+            data: playlist,
+            downloaded_at: Some(1_000),
+            stale: Some("network error".into()),
+        };
+        app.apply_playlist(Ok(fetched), "http://example.com/l.m3u", "");
+        assert_eq!(app.playlist.channels.len(), 3);
+        assert_eq!(app.playlist_downloaded_at, Some(1_000));
+        assert!(
+            app.notices[0].starts_with("Playlist: network error; showing the copy saved "),
+            "{:?}",
+            app.notices
+        );
+    }
+
+    #[test]
+    fn due_updates_start_while_running_but_not_too_often() {
+        let ctx = egui::Context::default();
+        let day = loader::REFRESH_SECS;
+        let mut app = App::new(Playlist::default(), Epg::default(), vec![]);
+        app.playlist_input = "/nonexistent/a.m3u".into();
+        app.epg_downloaded_at = Some(0);
+        app.check_updates(&ctx, day - 1);
+        assert!(app.loading.is_none(), "not a day old yet");
+        app.check_updates(&ctx, day);
+        let pending = app.loading.take().expect("guide update started");
+        assert!(pending.epg_due && !pending.playlist_due);
+        // It failed (the old copy stays): no new try right away.
+        app.check_updates(&ctx, day + 10);
+        assert!(app.loading.is_none());
+        app.check_updates(&ctx, day + UPDATE_RETRY_SECS);
+        assert!(app.loading.is_some());
+
+        app.loading = None;
+        app.config.epg_update = UpdatePolicy::Never;
+        app.check_updates(&ctx, 10 * day);
+        assert!(app.loading.is_none());
+    }
+
+    #[test]
+    fn an_updated_playlist_keeps_selection_and_playing_channel() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist.clone(), epg, vec![]);
+        app.selected = Some(2);
+        app.playing = Some(1);
+        app.current = Some(1);
+        app.group = Some("Sports".into());
+        // The update drops "Example News" and so moves everything up.
+        let mut updated = playlist;
+        updated.channels.remove(0);
+        app.set_playlist(updated);
+        assert_eq!(
+            (app.selected, app.playing, app.current),
+            (Some(1), Some(0), Some(0))
+        );
+        assert_eq!(app.group.as_deref(), Some("Sports"), "group still exists");
     }
 
     #[test]

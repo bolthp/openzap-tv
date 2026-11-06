@@ -1,7 +1,7 @@
 //! The settings dialog. It edits a draft; nothing changes until Save.
 
 use eframe::egui;
-use openzap::config::{Config, Theme};
+use openzap::config::{Config, Theme, UpdatePolicy};
 use openzap::player::{HardwareDecoding, PlaybackSettings};
 
 use crate::filepick::PickTarget;
@@ -14,6 +14,8 @@ pub struct SettingsDraft {
     pub resume_last: bool,
     pub playback: PlaybackSettings,
     pub theme: Theme,
+    pub playlist_update: UpdatePolicy,
+    pub epg_update: UpdatePolicy,
     /// A "browse" button was clicked; the app opens the file dialog.
     pub pick_request: Option<PickTarget>,
     /// A file dialog is open (the browse buttons are disabled meanwhile).
@@ -30,6 +32,8 @@ impl SettingsDraft {
             resume_last: config.resume_last,
             playback: config.playback,
             theme: config.view.theme,
+            playlist_update: config.playlist_update,
+            epg_update: config.epg_update,
             pick_request: None,
             picking: false,
         }
@@ -76,6 +80,24 @@ pub fn show(ctx: &egui::Context, draft: &mut SettingsDraft) -> Option<Outcome> {
                 );
                 ui.end_row();
             });
+
+        section(ui, "Updates");
+        egui::Grid::new("settings-updates")
+            .num_columns(2)
+            .spacing([12.0, 8.0])
+            .show(ui, |ui| {
+                ui.label("Update the playlist");
+                policy_combo(ui, "playlist-update", &mut draft.playlist_update);
+                ui.end_row();
+                ui.label("Update the guide");
+                policy_combo(ui, "epg-update", &mut draft.epg_update);
+                ui.end_row();
+            });
+        ui.small(
+            "For sources from the internet: in between, the copy saved last time is used \
+             (also when the server cannot be reached). Local files are read on every start. \
+             The reload button in the channel list always downloads.",
+        );
 
         section(ui, "Playback");
         egui::Grid::new("settings-playback")
@@ -170,6 +192,17 @@ fn source_field(
             *request = Some(target);
         }
     });
+}
+
+fn policy_combo(ui: &mut egui::Ui, id: &str, policy: &mut UpdatePolicy) {
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(policy.label())
+        .width(220.0)
+        .show_ui(ui, |ui| {
+            for p in UpdatePolicy::ALL {
+                ui.selectable_value(policy, p, p.label());
+            }
+        });
 }
 
 fn section(ui: &mut egui::Ui, title: &str) {

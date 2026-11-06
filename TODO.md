@@ -28,10 +28,6 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
 - [ ] Parental control: PIN for chosen groups/channels.
 - [ ] Picture-in-picture (second player instance) — later.
 
-## Programme guide
-
-- [ ] Refresh the guide automatically (daily); data is kept for 4 days ahead.
-
 ## Interface
 
 - [ ] Design pass: own font (e.g. Inter) and an icon font (e.g. Phosphor via
@@ -54,6 +50,10 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
 - [ ] Proxy support (HTTP/SOCKS) for playlist, EPG and streams — mpv has
       `http-proxy`, ureq supports proxies. Today streams that need it only
       work through a system VPN.
+
+## Cache
+
+- [ ] Remove saved copies of sources no longer in use (`cache/sources`).
 
 ## Logos
 

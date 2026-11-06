@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
 
+use crate::cache;
 use crate::config::Platform;
 use crate::source::{self, Source};
 
@@ -212,33 +213,12 @@ pub fn decode(bytes: &[u8]) -> Option<Rgba> {
 /// Stable file name for a URL (FNV-1a hash: the same in every build,
 /// unlike std's `DefaultHasher`).
 pub fn cache_file_name(url: &str) -> String {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in url.bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("{hash:016x}.img")
+    cache::file_name(url, "img")
 }
 
 /// Where logos are cached, given an environment lookup.
 pub fn cache_dir(platform: Platform, env: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
-    let non_empty = |name: &str| env(name).filter(|v| !v.is_empty());
-    let base = match platform {
-        Platform::Windows => PathBuf::from(non_empty("LOCALAPPDATA")?)
-            .join("OpenZap")
-            .join("cache"),
-        Platform::MacOs => PathBuf::from(non_empty("HOME")?)
-            .join("Library")
-            .join("Caches")
-            .join("OpenZap"),
-        Platform::Unix => match non_empty("XDG_CACHE_HOME") {
-            Some(dir) => PathBuf::from(dir).join("openzap"),
-            None => PathBuf::from(non_empty("HOME")?)
-                .join(".cache")
-                .join("openzap"),
-        },
-    };
-    Some(base.join("logos"))
+    cache::root(platform, env).map(|root| root.join("logos"))
 }
 
 /// Logo cache location for the current platform and environment.
@@ -249,7 +229,6 @@ pub fn default_cache_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     fn png(width: u32, height: u32) -> Vec<u8> {
         let image = image::RgbaImage::from_pixel(width, height, image::Rgba([200, 30, 30, 255]));
@@ -356,30 +335,11 @@ mod tests {
     }
 
     #[test]
-    fn cache_dirs_per_platform() {
-        let env = |pairs: &'static [(&str, &str)]| {
-            let map: HashMap<&str, &str> = pairs.iter().copied().collect();
-            move |name: &str| map.get(name).map(|v| v.to_string())
-        };
+    fn logos_live_in_the_cache_folder() {
+        let env = |name: &str| (name == "HOME").then(|| "/home/me".to_string());
         assert_eq!(
-            cache_dir(Platform::Unix, env(&[("HOME", "/home/me")])),
+            cache_dir(Platform::Unix, env),
             Some(PathBuf::from("/home/me/.cache/openzap/logos"))
         );
-        assert_eq!(
-            cache_dir(
-                Platform::Unix,
-                env(&[("HOME", "/h"), ("XDG_CACHE_HOME", "/c")])
-            ),
-            Some(PathBuf::from("/c/openzap/logos"))
-        );
-        assert_eq!(
-            cache_dir(Platform::Windows, env(&[("LOCALAPPDATA", "C:\\L")])),
-            Some(PathBuf::from("C:\\L").join("OpenZap/cache/logos"))
-        );
-        assert_eq!(
-            cache_dir(Platform::MacOs, env(&[("HOME", "/Users/me")])),
-            Some(PathBuf::from("/Users/me/Library/Caches/OpenZap/logos"))
-        );
-        assert_eq!(cache_dir(Platform::Unix, env(&[])), None);
     }
 }

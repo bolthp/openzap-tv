@@ -12,6 +12,8 @@ Desktop IPTV player for Windows, Linux and macOS: HLS/HTTP streams, M3U playlist
 ## Features
 
 - Open an M3U playlist and an optional XMLTV guide from a file or an HTTP(S) URL (`.gz` is supported)
+- Downloaded playlists and guides are saved: update them on every start, once
+  a day or only on demand; the saved copy is used when the server is down
 - Search, filter by group, favorites
 - "On air now" and "next" for every channel
 - Video plays inside the main window (libmpv, OpenGL)
@@ -44,8 +46,14 @@ Delete those two files to remove it.
 ## Usage
 
 On first start the **Settings** dialog opens: enter the playlist (a URL, or
-a file chosen with **Browse…**) and, optionally, the programme guide. Settings also hold hardware
-decoding, the network buffer and whether to resume the last channel on start.
+a file chosen with **Browse…**) and, optionally, the programme guide. Settings also hold
+how often to update them, hardware decoding, the network buffer and whether to resume
+the last channel on start.
+
+The channel list appears as soon as the playlist is read; a big guide keeps
+loading in the background. By default the playlist is downloaded on every
+start and the guide once a day (also while the app keeps running); the reload
+button in the channel list downloads both right away.
 
 ```sh
 openzap                                   # sources from the settings
@@ -56,8 +64,9 @@ Settings (sources, volume, favorites, playback options) are stored in a
 plain-text file: `~/.config/openzap/config.txt` on Linux,
 `%APPDATA%\OpenZap\config.txt` on Windows. It can contain URLs with access
 keys, so keep it private. The window size and position are kept next to it in
-`window.ron`. Logos are cached in `~/.cache/openzap/logos` on Linux and
-`%LOCALAPPDATA%\OpenZap\cache\logos` on Windows.
+`window.ron`. Logos and saved copies of downloaded playlists and guides are
+kept in `~/.cache/openzap` on Linux and `%LOCALAPPDATA%\OpenZap\cache` on
+Windows (`logos`, `sources`); saved playlists may contain access keys too.
 
 ## Keyboard
 

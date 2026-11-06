@@ -47,6 +47,44 @@ impl Theme {
     }
 }
 
+/// When a playlist or guide from the internet is downloaded again; until
+/// then the copy saved last time is used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdatePolicy {
+    OnStart,
+    Daily,
+    /// Only with the reload button (or when there is no saved copy).
+    Never,
+}
+
+impl UpdatePolicy {
+    pub const ALL: [UpdatePolicy; 3] = [
+        UpdatePolicy::OnStart,
+        UpdatePolicy::Daily,
+        UpdatePolicy::Never,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            UpdatePolicy::OnStart => "On every start",
+            UpdatePolicy::Daily => "Once a day",
+            UpdatePolicy::Never => "Never (reload button only)",
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            UpdatePolicy::OnStart => "start",
+            UpdatePolicy::Daily => "daily",
+            UpdatePolicy::Never => "never",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|p| p.key() == value)
+    }
+}
+
 /// Window layout and picture preferences.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ViewSettings {
@@ -108,6 +146,8 @@ pub struct Config {
     pub resume_last: bool,
     pub playback: PlaybackSettings,
     pub view: ViewSettings,
+    pub playlist_update: UpdatePolicy,
+    pub epg_update: UpdatePolicy,
 }
 
 impl Default for Config {
@@ -121,6 +161,10 @@ impl Default for Config {
             resume_last: false,
             playback: PlaybackSettings::default(),
             view: ViewSettings::default(),
+            // Playlists are small and their links may change; guides are
+            // big and published once a day.
+            playlist_update: UpdatePolicy::OnStart,
+            epg_update: UpdatePolicy::Daily,
         }
     }
 }
@@ -189,6 +233,16 @@ impl Config {
                         cfg.view.theme = t;
                     }
                 }
+                "playlist_update" => {
+                    if let Some(p) = UpdatePolicy::parse(value) {
+                        cfg.playlist_update = p;
+                    }
+                }
+                "epg_update" => {
+                    if let Some(p) = UpdatePolicy::parse(value) {
+                        cfg.epg_update = p;
+                    }
+                }
                 "volume" => {
                     if let Ok(v) = value.parse::<f64>()
                         && v.is_finite()
@@ -214,6 +268,8 @@ impl Config {
         }
         out.push_str(&format!("volume={}\n", self.volume));
         out.push_str(&format!("resume_last={}\n", yes_no(self.resume_last)));
+        out.push_str(&format!("playlist_update={}\n", self.playlist_update.key()));
+        out.push_str(&format!("epg_update={}\n", self.epg_update.key()));
         let hwdec = match self.playback.hwdec {
             HardwareDecoding::Off => "off",
             HardwareDecoding::Auto => "auto",
@@ -255,14 +311,7 @@ impl Config {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        options.open(path)?.write_all(self.serialize().as_bytes())
+        crate::cache::create_private(path)?.write_all(self.serialize().as_bytes())
     }
 }
 
@@ -351,8 +400,21 @@ mod tests {
                 aspect: AspectMode::Fill,
                 theme: Theme::Dark,
             },
+            playlist_update: UpdatePolicy::Never,
+            epg_update: UpdatePolicy::OnStart,
         };
         assert_eq!(Config::parse(&cfg.serialize()), cfg);
+    }
+
+    #[test]
+    fn update_policies_parse_leniently() {
+        for p in UpdatePolicy::ALL {
+            let cfg = Config::parse(&format!("playlist_update={0}\nepg_update={0}\n", p.key()));
+            assert_eq!((cfg.playlist_update, cfg.epg_update), (p, p));
+        }
+        let cfg = Config::parse("playlist_update=hourly\nepg_update=\n");
+        assert_eq!(cfg.playlist_update, UpdatePolicy::OnStart);
+        assert_eq!(cfg.epg_update, UpdatePolicy::Daily);
     }
 
     #[test]

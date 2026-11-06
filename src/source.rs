@@ -7,8 +7,11 @@
 //! access key.
 
 use std::fmt;
-use std::io::{self, BufRead, BufReader, ErrorKind, Read};
+use std::fs::File;
+use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 /// Default limit of decompressed bytes for [`fetch_text`].
@@ -78,13 +81,35 @@ pub struct Opened {
     pub compressed: bool,
 }
 
+/// Where [`open_copying`] writes the raw bytes it reads.
+pub struct Copy {
+    pub file: File,
+    /// Cleared if writing failed; the copy is then incomplete.
+    pub ok: Arc<AtomicBool>,
+}
+
 /// Opens the source for streaming, gunzipping on the fly if needed.
 pub fn open(source: &Source, max_bytes: u64) -> Result<Opened, FetchError> {
+    open_copying(source, max_bytes, None)
+}
+
+/// Like [`open`], also writing the bytes as they arrive (still compressed)
+/// into `copy`.
+pub fn open_copying(
+    source: &Source,
+    max_bytes: u64,
+    copy: Option<Copy>,
+) -> Result<Opened, FetchError> {
     let raw: Box<dyn Read + Send> = match source {
-        Source::File(path) => {
-            Box::new(std::fs::File::open(path).map_err(|e| file_error(path, e.kind()))?)
-        }
+        Source::File(path) => Box::new(File::open(path).map_err(|e| file_error(path, e.kind()))?),
         Source::Url(url) => Box::new(connect(url)?),
+    };
+    let raw: Box<dyn Read + Send> = match copy {
+        Some(copy) => Box::new(Tee {
+            inner: raw,
+            copy: Some(copy),
+        }),
+        None => raw,
     };
     let mut buffered = BufReader::new(raw);
     let compressed = buffered
@@ -168,6 +193,26 @@ fn map_http_error(err: ureq::Error) -> FetchError {
         ureq::Error::Timeout(_) => FetchError::Timeout,
         ureq::Error::HostNotFound => FetchError::HostNotFound,
         _ => FetchError::Network,
+    }
+}
+
+/// Writes everything read from `inner` into a copy; a failed write only
+/// abandons the copy.
+struct Tee<R> {
+    inner: R,
+    copy: Option<Copy>,
+}
+
+impl<R: Read> Read for Tee<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if let Some(copy) = &mut self.copy
+            && copy.file.write_all(&buf[..n]).is_err()
+        {
+            copy.ok.store(false, Ordering::Relaxed);
+            self.copy = None;
+        }
+        Ok(n)
     }
 }
 
@@ -351,6 +396,30 @@ mod tests {
         data.extend(gzip(b"second"));
         let path = temp_file("multi.gz", &data);
         assert_eq!(fetch_text(&Source::File(path)).unwrap(), "first,second");
+    }
+
+    #[test]
+    fn copy_keeps_the_raw_bytes() {
+        let data = gzip(b"hello copy");
+        let url = serve_once("200 OK", data.clone());
+        let path = std::env::temp_dir().join(format!("openzap-copy-{}", std::process::id()));
+        let ok = Arc::new(AtomicBool::new(true));
+        let copy = Copy {
+            file: File::create(&path).unwrap(),
+            ok: ok.clone(),
+        };
+        let mut opened = open_copying(&Source::Url(url), 1024, Some(copy)).unwrap();
+        let mut text = String::new();
+        opened.reader.read_to_string(&mut text).unwrap();
+        drop(opened);
+        assert_eq!(text, "hello copy");
+        assert!(ok.load(Ordering::Relaxed));
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            data,
+            "saved still compressed"
+        );
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
