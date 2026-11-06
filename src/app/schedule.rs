@@ -7,8 +7,8 @@ use openzap::clock;
 use openzap::config::Side;
 use openzap::epg::Programme;
 
-use super::App;
 use super::palette::palette;
+use super::{App, window_drag_background};
 
 const WIDTH: f32 = 400.0;
 const SLIDE_SECS: f32 = 0.18;
@@ -70,7 +70,7 @@ impl App {
             self.schedule.rect = None;
             return;
         }
-        let channel = self.playing.or(self.selected);
+        let channel = self.guide_channel();
         self.schedule.follow(channel);
         let width = WIDTH.min(screen.width() * 0.8);
         // Opposite the channel list, so both can be out at once.
@@ -99,6 +99,7 @@ impl App {
                         let size = rect.size() - egui::vec2(24.0, 24.0);
                         ui.set_min_size(size);
                         ui.set_max_size(size);
+                        window_drag_background(ui, self.fullscreen);
                         let colors = palette(ui.visuals());
                         ui.horizontal(|ui| {
                             ui.heading("Programme guide");

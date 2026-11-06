@@ -1020,6 +1020,19 @@ impl App {
         }
     }
 
+    /// The channel the guide (bar and guide panel) is about: the one
+    /// selected in the list, else the one playing.
+    fn guide_channel(&self) -> Option<usize> {
+        self.selected.or(self.playing)
+    }
+
+    /// Selects a channel in the list without playing it; the bar comes up
+    /// with its programme.
+    fn select(&mut self, idx: usize) {
+        self.selected = Some(idx);
+        self.bar.request(BAR_START_SECS);
+    }
+
     fn select_and_play(&mut self, idx: usize) {
         self.selected = Some(idx);
         self.pending_play = Some(idx);
@@ -1079,8 +1092,8 @@ impl App {
         self.osd = Some((text.into(), time + OSD_SECS));
     }
 
-    /// Windowed: docks or hides the list. Fullscreen (or with the list
-    /// hidden): pins or unpins the list over the video.
+    /// Windowed: docks or hides the list. Fullscreen: pins or unpins the
+    /// list over the video.
     fn toggle_list(&mut self, time: f64) {
         if self.fullscreen {
             self.list_overlay.pinned = !self.list_overlay.pinned;
@@ -1276,9 +1289,9 @@ impl eframe::App for App {
         self.apply_view(ui.ctx());
         let fullscreen = is_fullscreen(ui.ctx());
         self.fullscreen = fullscreen;
-        let docked = !fullscreen && self.config.view.list_visible;
+        let mode = list_mode(fullscreen, self.config.view.list_visible);
         let screen = ui.max_rect();
-        if docked {
+        if mode == ListMode::Docked {
             let panel = match self.config.view.list_side {
                 Side::Left => egui::Panel::left("channels"),
                 Side::Right => egui::Panel::right("channels"),
@@ -1291,8 +1304,10 @@ impl eframe::App for App {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
             .show(ui, |ui| self.video_area(ui, fullscreen, now));
-        if !docked {
+        if mode == ListMode::Overlay {
             self.list_overlay(ui.ctx(), screen, now);
+        } else {
+            self.list_overlay.hide();
         }
         self.schedule_panel(ui.ctx(), screen, now);
         let ctx = ui.ctx().clone();
@@ -1343,6 +1358,49 @@ fn subtitle_position(covered: f32) -> u32 {
 
 fn has_logos(guide: &GuideIndex, channels: usize) -> bool {
     (0..channels).any(|i| guide.logo(i).is_some())
+}
+
+/// Starts moving the window when a drag with the left button begins on
+/// `response` (the OS takes over the drag). Not in fullscreen.
+fn drag_window(response: &egui::Response, fullscreen: bool) {
+    if !fullscreen && response.drag_started_by(egui::PointerButton::Primary) {
+        response
+            .ctx
+            .send_viewport_cmd(egui::ViewportCommand::StartDrag);
+    }
+}
+
+/// Makes the empty background of `ui` a handle for moving the window.
+/// Call it before adding widgets: those added later take the pointer first.
+/// Labels stop being selectable, so dragging over text moves the window too.
+fn window_drag_background(ui: &mut egui::Ui, fullscreen: bool) {
+    ui.style_mut().interaction.selectable_labels = false;
+    if fullscreen {
+        return;
+    }
+    let response = ui.interact(
+        ui.max_rect(),
+        ui.unique_id().with("window-drag"),
+        egui::Sense::drag(),
+    );
+    drag_window(&response, fullscreen);
+}
+
+/// Where the channel list goes: docked beside the video, sliding in over
+/// it (fullscreen), or nowhere (windowed with the list hidden).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ListMode {
+    Docked,
+    Overlay,
+    Hidden,
+}
+
+fn list_mode(fullscreen: bool, list_visible: bool) -> ListMode {
+    match (fullscreen, list_visible) {
+        (true, _) => ListMode::Overlay,
+        (false, true) => ListMode::Docked,
+        (false, false) => ListMode::Hidden,
+    }
 }
 
 /// Whether the window should be "always on top": never in fullscreen
@@ -1790,6 +1848,82 @@ mod tests {
         app.toggle_list(0.0);
         assert!(!app.config.view.list_visible);
         assert!(app.pending_save);
+    }
+
+    #[test]
+    fn list_is_docked_slides_in_or_stays_away() {
+        assert_eq!(list_mode(false, true), ListMode::Docked);
+        // Hidden in a window: no sliding in at the edge.
+        assert_eq!(list_mode(false, false), ListMode::Hidden);
+        assert_eq!(list_mode(true, true), ListMode::Overlay);
+        assert_eq!(list_mode(true, false), ListMode::Overlay);
+    }
+
+    #[test]
+    fn guide_follows_the_selected_channel() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+        assert_eq!(app.guide_channel(), None);
+        app.playing = Some(0);
+        assert_eq!(
+            app.guide_channel(),
+            Some(0),
+            "nothing selected: the one playing"
+        );
+        app.select(2);
+        assert_eq!(app.guide_channel(), Some(2));
+        assert_eq!(app.pending_play, None, "a click only selects");
+        assert!(
+            app.bar.is_visible(10.0, false),
+            "bar comes up with the guide"
+        );
+    }
+
+    /// Presses the left button on a draggable rect and moves the pointer,
+    /// one event per frame; true if a window drag was asked for.
+    fn drag_requested(fullscreen: bool) -> bool {
+        let ctx = egui::Context::default();
+        let at = |x| egui::pos2(x, 50.0);
+        let press = |pressed| egui::Event::PointerButton {
+            pos: at(50.0),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let frames = [
+            vec![egui::Event::PointerMoved(at(50.0))],
+            vec![press(true)],
+            vec![egui::Event::PointerMoved(at(90.0))],
+            vec![],
+        ];
+        let mut asked = false;
+        for events in frames {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(200.0, 100.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                let response = ui.allocate_rect(ui.max_rect(), egui::Sense::click_and_drag());
+                drag_window(&response, fullscreen);
+            });
+            output.textures_delta.clear(); // nothing renders them here
+            asked |= output.viewport_output.values().any(|v| {
+                v.commands
+                    .iter()
+                    .any(|c| matches!(c, egui::ViewportCommand::StartDrag))
+            });
+        }
+        asked
+    }
+
+    #[test]
+    fn dragging_moves_the_window_but_not_in_fullscreen() {
+        assert!(drag_requested(false));
+        assert!(!drag_requested(true));
     }
 
     #[test]

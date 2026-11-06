@@ -10,7 +10,7 @@ use openzap::config::Side;
 
 use super::logo::paint_logo;
 use super::palette::palette;
-use super::{Action, App};
+use super::{Action, App, window_drag_background};
 
 /// Width of the list when it slides in over the video.
 const OVERLAY_WIDTH: f32 = 340.0;
@@ -40,6 +40,11 @@ impl ListOverlay {
         self.pinned || time < self.until
     }
 
+    /// The list is not drawn at all (docked or hidden).
+    pub(super) fn hide(&mut self) {
+        self.rect = None;
+    }
+
     /// Where the list was drawn on the last frame, if it is out.
     pub(super) fn visible_rect(&self) -> Option<egui::Rect> {
         self.rect
@@ -58,6 +63,7 @@ const STAR: egui::Color32 = egui::Color32::from_rgb(240, 190, 40);
 
 impl App {
     pub(super) fn channel_panel(&mut self, ui: &mut egui::Ui, now: i64) {
+        window_drag_background(ui, self.fullscreen);
         self.list_header(ui);
         for notice in &self.notices {
             ui.colored_label(ui.visuals().error_fg_color, notice);
@@ -237,7 +243,7 @@ impl App {
             }
         });
         if let Some(idx) = clicked {
-            self.selected = Some(idx);
+            self.select(idx);
         }
         if let Some(idx) = play {
             self.pending_play = Some(idx);

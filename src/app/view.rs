@@ -12,7 +12,7 @@ use openzap::streaminfo::StreamInfo;
 
 use super::logo::paint_logo;
 use super::palette;
-use super::{Action, App, StreamState, VOLUME_STEP, draw_label, overlay_text};
+use super::{Action, App, StreamState, VOLUME_STEP, drag_window, draw_label, overlay_text};
 
 /// How long the bar stays after the mouse stops moving, seconds.
 pub(super) const BAR_IDLE_SECS: f64 = 3.0;
@@ -68,7 +68,8 @@ impl App {
     /// The video with its overlays, filling the available space.
     pub(super) fn video_area(&mut self, ui: &mut egui::Ui, fullscreen: bool, now: i64) {
         let rect = ui.available_rect_before_wrap();
-        let response = ui.allocate_rect(rect, egui::Sense::click());
+        let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+        drag_window(&response, fullscreen);
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, egui::Color32::BLACK);
         let time = ui.input(|i| i.time);
@@ -77,10 +78,10 @@ impl App {
         if showing_video {
             self.video.paint(ui, rect);
         }
-        let hint = if self.config.view.list_visible && !fullscreen {
-            "Choose a channel in the list"
-        } else {
-            "Nothing playing"
+        let hint = match (fullscreen, self.config.view.list_visible) {
+            (false, true) => "Choose a channel in the list",
+            (false, false) => "Nothing playing (L shows the channel list)",
+            (true, _) => "Nothing playing",
         };
         let message =
             overlay_text(&self.stream).or_else(|| (!showing_video).then(|| hint.to_string()));
@@ -264,6 +265,8 @@ impl App {
         // Always dark: the bar sits on top of the picture. (`visuals_mut`
         // changes only this Ui; `set_visuals` would change the whole app.)
         *child.visuals_mut() = palette::dark_visuals(ui.ctx());
+        // Dragging over the guide text moves the window (see `video_area`).
+        child.style_mut().interaction.selectable_labels = false;
         self.refresh_tracks(time);
         self.bar_guide(&mut child, now);
         child.add_space(8.0);
@@ -274,7 +277,7 @@ impl App {
     /// Channel name and the programme guide for it.
     fn bar_guide(&self, ui: &mut egui::Ui, now: i64) {
         let colors = palette::palette(ui.visuals());
-        let current = self.playing.or(self.selected);
+        let current = self.guide_channel();
         let Some((idx, channel)) =
             current.and_then(|i| self.playlist.channels.get(i).map(|c| (i, c)))
         else {
@@ -302,7 +305,10 @@ impl App {
                 ui.label(egui::RichText::new(clock::local_hm(now)).heading());
                 // Failures are already shown in the middle of the video.
                 let quiet = matches!(self.stream, StreamState::Playing | StreamState::Failed(_));
-                if !quiet && !self.status.is_empty() {
+                if self.playing.is_some_and(|p| p != idx) {
+                    // The guide shows a channel picked in the list, not the one on screen.
+                    ui.colored_label(colors.secondary, "Selected · Enter to watch");
+                } else if !quiet && !self.status.is_empty() {
                     ui.weak(&self.status);
                 }
             });
@@ -421,7 +427,7 @@ impl App {
         if slider.drag_stopped() {
             self.pending_save = true;
         }
-        if let Some(idx) = self.playing.or(self.selected) {
+        if let Some(idx) = self.guide_channel() {
             let (star, hint) = if self.is_favorite(idx) {
                 ("★", "Remove from favorites")
             } else {

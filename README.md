@@ -81,10 +81,13 @@ keys, so keep it private. The window size and position are kept next to it in
 | `I` | show / hide stream info (resolution, codecs, HDR, decoder, bitrate) |
 
 Moving the mouse over the video brings up the bar with the programme guide
-and the controls; it hides again after a few seconds.
-In fullscreen (or with the list hidden), moving the mouse to the window edge
-where the list belongs slides it in over the video; it slides away when the
-mouse leaves it, unless pinned with `L` or the list button.
+and the controls; it hides again after a few seconds. The guide is for the
+channel selected in the list (clicking a channel brings the bar up), or the
+one playing if nothing else is selected.
+In fullscreen, moving the mouse to the window edge where the list belongs
+slides it in over the video; it slides away when the mouse leaves it, unless
+pinned with `L` or the list button.
+In a window, drag the video (or any empty spot) to move the window.
 
 ## Known issues
 
