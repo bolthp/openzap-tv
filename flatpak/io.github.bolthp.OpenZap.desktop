@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=OpenZap
+GenericName=IPTV Player
+Comment=Watch IPTV playlists with a programme guide
+Exec=openzap
+Icon=io.github.bolthp.OpenZap
+Terminal=false
+Categories=AudioVideo;Video;Player;TV;
+Keywords=IPTV;TV;M3U;EPG;XMLTV;
+StartupWMClass=io.github.bolthp.OpenZap

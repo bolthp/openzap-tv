@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.bolthp.OpenZap</id>
+  <name>OpenZap</name>
+  <summary>Watch IPTV playlists with a programme guide</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <developer id="io.github.bolthp">
+    <name>bolthp</name>
+  </developer>
+  <description>
+    <p>
+      OpenZap plays IPTV channels from an M3U playlist, with an XMLTV
+      programme guide. Playlists and guides can be local files or URLs.
+    </p>
+    <ul>
+      <li>Channel list with search, groups, favorites and logos</li>
+      <li>What is on now and next, and the full guide of each channel</li>
+      <li>Audio track and subtitle switching, picture size, always on top</li>
+      <li>Downloaded playlists and guides are kept, so the app starts fast and works when a server is down</li>
+      <li>Hardware video decoding</li>
+    </ul>
+    <p>OpenZap does not come with any channels: you need a playlist.</p>
+  </description>
+  <launchable type="desktop-id">io.github.bolthp.OpenZap.desktop</launchable>
+  <url type="homepage">https://github.com/bolthp/openzap-tv</url>
+  <url type="bugtracker">https://github.com/bolthp/openzap-tv/issues</url>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/bolthp/openzap-tv/main/docs/screenshot.png</image>
+      <caption>A playlist with its programme guide, dark theme</caption>
+    </screenshot>
+  </screenshots>
+  <content_rating type="oars-1.1"/>
+  <requires>
+    <display_length compare="ge">720</display_length>
+  </requires>
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </supports>
+  <releases>
+    <release version="0.3.2" date="2026-11-10"/>
+    <release version="0.3.1" date="2026-11-06"/>
+    <release version="0.3.0" date="2026-11-03"/>
+    <release version="0.2.0" date="2026-11-02"/>
+    <release version="0.1.0" date="2026-11-02"/>
+  </releases>
+</component>

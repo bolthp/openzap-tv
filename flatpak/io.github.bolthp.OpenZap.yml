@@ -1,0 +1,131 @@
+# Flatpak build of OpenZap with its own libmpv (and the FFmpeg it needs).
+# Build locally with scripts/flatpak-build.sh; the release workflow builds
+# the same manifest. Library versions follow Flathub's io.mpv.Mpv.
+id: io.github.bolthp.OpenZap
+runtime: org.freedesktop.Platform
+runtime-version: '26.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: openzap
+
+finish-args:
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio
+  # OpenGL and hardware video decoding (VA-API).
+  - --device=dri
+  # Playlists and guides typed in as paths; "Browse…" goes through the
+  # file chooser portal and works without this.
+  - --filesystem=home:ro
+
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /share/man
+  - '*.la'
+  - '*.a'
+
+modules:
+  - name: libass
+    config-opts:
+      - --disable-static
+      - --enable-asm
+      - --enable-harfbuzz
+      - --enable-fontconfig
+    sources:
+      - type: git
+        url: https://github.com/libass/libass.git
+        tag: 0.17.5
+        commit: 4a05d8127f525943ebf45fdc6497c9e665947f0d
+
+  - name: ffmpeg
+    config-opts:
+      - --disable-debug
+      - --disable-doc
+      - --disable-static
+      - --disable-programs
+      - --enable-shared
+      - --enable-gpl
+      - --enable-version3
+      - --enable-gnutls
+      - --enable-libass
+      - --enable-libfreetype
+      - --enable-libdrm
+      - --enable-vaapi
+    cleanup:
+      - /share/ffmpeg
+    sources:
+      - type: archive
+        url: https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
+        sha256: 8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e
+
+  - name: libplacebo
+    buildsystem: meson
+    config-opts:
+      - -Dvulkan=disabled
+      - -Dopengl=enabled
+      - -Dshaderc=disabled
+      - -Dglslang=disabled
+      - -Ddemos=false
+      - -Dtests=false
+    sources:
+      # git: the GL loader and its generator come as submodules.
+      - type: git
+        url: https://code.videolan.org/videolan/libplacebo.git
+        tag: v7.387.0
+        commit: 275f7dea27924cdd34ab2e6c20e448b6bc4fab65
+
+  - name: mpv
+    buildsystem: meson
+    config-opts:
+      # Only the library: OpenZap embeds it.
+      - -Dlibmpv=true
+      - -Dcplayer=false
+      - -Dbuild-date=false
+      - -Dlua=disabled
+      - -Djavascript=disabled
+      - -Dmanpage-build=disabled
+      - -Dhtml-build=disabled
+      - -Dpdf-build=disabled
+      - -Dgl=enabled
+      - -Degl=enabled
+      - -Degl-wayland=enabled
+      - -Degl-x11=enabled
+      - -Dvaapi=enabled
+      - -Dpulse=enabled
+      - -Dpipewire=enabled
+      - -Dalsa=enabled
+    sources:
+      - type: git
+        url: https://github.com/mpv-player/mpv.git
+        tag: v0.42.0
+        commit: b0841e8c4d156b8403dc1876c4cbd9011eb583f3
+
+  - name: openzap
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      env:
+        CARGO_HOME: /run/build/openzap/cargo
+        CARGO_NET_OFFLINE: 'true'
+    build-commands:
+      - cargo --offline fetch --manifest-path Cargo.toml --verbose
+      - cargo --offline build --release --locked
+      - install -Dm755 target/release/openzap ${FLATPAK_DEST}/bin/openzap
+      - install -Dm644 assets/icon.png ${FLATPAK_DEST}/share/icons/hicolor/256x256/apps/${FLATPAK_ID}.png
+      - install -Dm644 flatpak/${FLATPAK_ID}.desktop ${FLATPAK_DEST}/share/applications/${FLATPAK_ID}.desktop
+      - install -Dm644 flatpak/${FLATPAK_ID}.metainfo.xml ${FLATPAK_DEST}/share/metainfo/${FLATPAK_ID}.metainfo.xml
+    sources:
+      - type: dir
+        path: ..
+        skip:
+          - target
+          - .git
+          - .flatpak-builder
+          - flatpak_app
+          - repo
+      # Generated from Cargo.lock by scripts/flatpak-cargo-sources.sh.
+      - cargo-sources.json

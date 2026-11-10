@@ -33,19 +33,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Version (tag must match Cargo.toml)
+      - name: Version (tag must match Cargo.toml and the metainfo)
         shell: bash
-        run: |
-          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
-          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-              echo "Tag $GITHUB_REF_NAME does not match Cargo.toml version $version" >&2
-              exit 1
-            fi
-            echo "RELEASE_NAME=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
-          else
-            echo "RELEASE_NAME=v$version-dryrun" >> "$GITHUB_ENV"
-          fi
+        run: echo "RELEASE_NAME=$(scripts/release-name.sh)" >> "$GITHUB_ENV"
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -84,9 +74,40 @@ jobs:
           path: ${{ env.ASSET }}
           if-no-files-found: error
 
+  flatpak:
+    name: Build (flatpak-x86_64)
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-26.08
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Version (tag must match Cargo.toml and the metainfo)
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          echo "RELEASE_NAME=$(scripts/release-name.sh)" >> "$GITHUB_ENV"
+
+      - name: Cargo sources
+        run: scripts/flatpak-cargo-sources.sh
+
+      # Builds libmpv and FFmpeg too; the cache keeps them between releases.
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          manifest-path: flatpak/io.github.bolthp.OpenZap.yml
+          bundle: openzap-${{ env.RELEASE_NAME }}-x86_64.flatpak
+          cache-key: flatpak-${{ hashFiles('flatpak/io.github.bolthp.OpenZap.yml') }}
+          upload-artifact: false
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: flatpak-x86_64
+          path: openzap-${{ env.RELEASE_NAME }}-x86_64.flatpak
+          if-no-files-found: error
+
   publish:
     name: Publish release
-    needs: build
+    needs: [build, flatpak]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:

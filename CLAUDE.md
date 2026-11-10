@@ -23,7 +23,8 @@
 ## Releases
 
 - CI (`.github/workflows/ci.yml`) runs fmt, clippy (`-D warnings`) and tests on Linux and Windows for every push.
-- To release: bump `version` in `Cargo.toml`, commit, tag `vX.Y.Z` and push the tag. `release.yml` builds the Linux and Windows archives and publishes a GitHub pre-release (it checks that the tag matches `Cargo.toml`).
+- To release: bump `version` in `Cargo.toml`, add a `<release>` entry to `flatpak/io.github.bolthp.OpenZap.metainfo.xml`, commit, tag `vX.Y.Z` and push the tag. `release.yml` builds the Linux and Windows archives and the Flatpak bundle and publishes a GitHub pre-release (`scripts/release-name.sh` checks that the tag matches `Cargo.toml` and the metainfo).
+- The Flatpak (`flatpak/`) builds its own libmpv; library versions follow Flathub's `io.mpv.Mpv`. Rust crates are listed by `scripts/flatpak-cargo-sources.sh` (generated, not committed).
 - The Windows libmpv build is pinned (tag + SHA-256) in `scripts/fetch-libmpv-windows.ps1`.
 - libmpv is loaded at run time (`src/player/ffi.rs`); keep the build free of libmpv link-time dependencies.
 - Video is embedded via mpv's OpenGL render API (`src/player/render.rs`, `src/video.rs`), so eframe must use the glow backend.

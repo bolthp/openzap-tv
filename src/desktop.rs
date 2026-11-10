@@ -5,13 +5,25 @@
 //! the `.desktop` file whose name matches the window's app id. Without
 //! one, the taskbar shows a generic icon. Packages install this file
 //! system-wide; for the plain tar.gz the app writes it on start-up (as
-//! e.g. Telegram's tarball does).
+//! e.g. Telegram's tarball does). A Flatpak exports its own entry, named
+//! after the Flatpak id.
 
 use std::io;
 use std::path::{Path, PathBuf};
 
 /// Window app id (Wayland) / WM_CLASS (X11); also the `.desktop` file name.
 pub const APP_ID: &str = "openzap";
+
+/// The Flatpak id when running inside a Flatpak (`FLATPAK_ID` is set by it).
+pub fn flatpak_id(env: impl Fn(&str) -> Option<String>) -> Option<String> {
+    env("FLATPAK_ID").filter(|id| !id.trim().is_empty())
+}
+
+/// The window's app id: the Flatpak id inside a Flatpak (its exported
+/// `.desktop` file has that name), else [`APP_ID`].
+pub fn app_id(env: impl Fn(&str) -> Option<String>) -> String {
+    flatpak_id(env).unwrap_or_else(|| APP_ID.to_string())
+}
 
 /// Where per-user `.desktop` files and icons live (XDG data home).
 pub fn data_home(env: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
@@ -120,6 +132,15 @@ mod tests {
             Some(PathBuf::from("/data"))
         );
         assert_eq!(data_home(env(&[])), None);
+    }
+
+    #[test]
+    fn app_id_is_the_flatpak_id_inside_a_flatpak() {
+        let flatpak = |name: &str| (name == "FLATPAK_ID").then(|| "io.example.App".to_string());
+        assert_eq!(app_id(flatpak), "io.example.App");
+        assert_eq!(flatpak_id(flatpak).as_deref(), Some("io.example.App"));
+        assert_eq!(app_id(|_| None), APP_ID);
+        assert_eq!(flatpak_id(|_| Some(" ".to_string())), None);
     }
 
     #[test]

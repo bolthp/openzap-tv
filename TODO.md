@@ -70,9 +70,8 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
 ## Gamepads and Steam Deck
 
 - [ ] Run on the Steam Deck (SteamOS: x86_64 Linux, AMD GPU, 1280×800).
-      Desktop Mode should already work once libmpv is bundled (SteamOS has a
-      read-only system, so no `libmpv2` package): AppImage or, better there,
-      Flatpak. Game Mode: added as a non-Steam game, runs fullscreen under
+      Desktop Mode: the Flatpak (libmpv bundled; SteamOS has a read-only
+      system, so no `libmpv2` package). Game Mode: added as a non-Steam game, runs fullscreen under
       gamescope. Check VAAPI hardware decoding on the Deck's GPU.
 - [ ] Gamepad control. Steam Input can already map the Deck's controls to
       keys (D-pad → PageUp/PageDown, A → Enter, B → Esc), so a keyboard-only
@@ -85,7 +84,9 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
 
 ## Packaging
 
-- [ ] Linux AppImage bundling libmpv (today the system `libmpv2` is required).
-      Also fixes the generic taskbar icon on the very first start (the desktop
-      entry is written during that start).
+- [ ] Check the Flatpak on Ubuntu (Wayland), KDE and the Steam Deck: video,
+      VA-API decoding, file chooser, icon.
+- [ ] Publish on Flathub (needs a submission and review; the manifest already
+      builds offline).
+- [ ] Maybe an AppImage as well (no runtime download).
 - [ ] macOS build, once someone can test it.

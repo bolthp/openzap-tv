@@ -69,13 +69,17 @@ fn main() -> eframe::Result {
     if let Some(log) = &debug_log {
         app.set_debug_log(Arc::clone(log));
     }
+    let env = |name: &str| std::env::var(name).ok();
+    // A Flatpak exports its own desktop entry.
     #[cfg(all(unix, not(target_os = "macos")))]
-    install_desktop_entry(debug_log.as_deref());
+    if openzap::desktop::flatpak_id(env).is_none() {
+        install_desktop_entry(debug_log.as_deref());
+    }
 
     let mut viewport = eframe::egui::ViewportBuilder::default()
         .with_title("OpenZap")
-        // Lets Wayland compositors find `openzap.desktop` for the icon.
-        .with_app_id(openzap::desktop::APP_ID)
+        // Lets Wayland compositors find the `.desktop` file for the icon.
+        .with_app_id(openzap::desktop::app_id(env))
         .with_inner_size([1280.0, 760.0])
         .with_min_inner_size([720.0, 480.0]);
     // The PNG is compiled in, so this only fails if the file in the repo is broken.

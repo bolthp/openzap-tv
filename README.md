@@ -29,16 +29,20 @@ Desktop IPTV player for Windows, Linux and macOS: HLS/HTTP streams, M3U playlist
 
 ## Install
 
-Download an archive from the [Releases](../../releases) page.
+Download a file from the [Releases](../../releases) page.
 
 - **Windows:** unpack the zip and run `openzap.exe`. `libmpv-2.dll` is included.
   The executable is not code-signed, so Windows SmartScreen may warn on first start.
-- **Linux:** unpack the tar.gz and run `./openzap`. libmpv must be installed:
+- **Linux, Flatpak** (any distribution, Steam Deck; libmpv included):
+  `flatpak install --user openzap-vX.Y.Z-x86_64.flatpak`, then start it from the
+  application menu or with `flatpak run io.github.bolthp.OpenZap`. The runtime it
+  needs comes from Flathub (added automatically if it is not set up yet).
+- **Linux, tar.gz:** unpack and run `./openzap`. libmpv must be installed:
   `sudo apt install libmpv2` (Debian/Ubuntu; `libmpv1` on older releases).
 
 OpenZap looks for libmpv next to the executable first, then in the system.
 
-On Linux, OpenZap adds itself to the application menu on first start
+The tar.gz build adds itself to the application menu on first start
 (`~/.local/share/applications/openzap.desktop` and its icon), so launchers and
 the taskbar show its icon; the entry follows the executable if you move it.
 Delete those two files to remove it.
@@ -67,6 +71,8 @@ keys, so keep it private. The window size and position are kept next to it in
 `window.ron`. Logos and saved copies of downloaded playlists and guides are
 kept in `~/.cache/openzap` on Linux and `%LOCALAPPDATA%\OpenZap\cache` on
 Windows (`logos`, `sources`); saved playlists may contain access keys too.
+The Flatpak keeps all of this in `~/.var/app/io.github.bolthp.OpenZap/`
+(`config/openzap`, `cache/openzap`).
 
 ## Keyboard
 
@@ -107,12 +113,15 @@ In a window, drag the video (or any empty spot) to move the window.
   Top*) and the window opens where the desktop places it; its size is kept.
   Both work in an X11 session, on Windows and on macOS.
 - **Linux, first start:** the taskbar may show a generic icon until the second
-  start (the desktop entry is created on the first one). An AppImage will fix this.
+  start of the tar.gz build (the desktop entry is created on the first one). The
+  Flatpak does not have this problem.
 
 ## Troubleshooting
 
 Start with `--debug` (on Windows: double-click `openzap-debug.bat`) to write
-`openzap-debug.log` next to the executable: GPU and OpenGL version, player
+`openzap-debug.log` next to the executable (Flatpak: `flatpak run
+io.github.bolthp.OpenZap --debug`, the log goes to
+`~/.var/app/io.github.bolthp.OpenZap/config/openzap/`): GPU and OpenGL version, player
 events, mpv's messages and a periodic check whether video frames arrive.
 Stream URLs in the log are masked, but it may still contain channel names and
 server host names — look through it before sharing.
@@ -127,13 +136,17 @@ cargo run --release
 cargo test
 ```
 
+The Flatpak (manifest in `flatpak/`, building libmpv and FFmpeg as well) is
+built with `scripts/flatpak-build.sh`; it needs `flatpak` and `flatpak-builder`.
+
 ## Third-party software
 
 Windows releases bundle `libmpv-2.dll` from
 [shinchiro/mpv-winbuild-cmake](https://github.com/shinchiro/mpv-winbuild-cmake)
 (a GPL build of [mpv](https://mpv.io) with FFmpeg); the exact version is pinned in
 `scripts/fetch-libmpv-windows.ps1`. Sources are available from that project and from
-the mpv and FFmpeg repositories.
+the mpv and FFmpeg repositories. The Flatpak builds mpv, FFmpeg, libplacebo and
+libass from source; their versions are pinned in `flatpak/io.github.bolthp.OpenZap.yml`.
 
 ## License
 
