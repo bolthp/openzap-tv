@@ -12,7 +12,9 @@ use openzap::streaminfo::StreamInfo;
 
 use super::logo::paint_logo;
 use super::palette;
-use super::{Action, App, StreamState, VOLUME_STEP, drag_window, draw_label, overlay_text};
+use super::{
+    Action, App, InfoMode, StreamState, VOLUME_STEP, drag_window, draw_label, overlay_text,
+};
 
 /// How long the bar stays after the mouse stops moving, seconds.
 pub(super) const BAR_IDLE_SECS: f64 = 3.0;
@@ -95,8 +97,11 @@ impl App {
                 ui,
             );
         }
-        if showing_video {
-            self.stream_info(ui, &painter, rect, time);
+        match self.info.shown(time) {
+            InfoMode::Off => {}
+            InfoMode::Programme => self.programme_info(ui, &painter, rect, now),
+            InfoMode::Stream if showing_video => self.stream_info(ui, &painter, rect, time),
+            InfoMode::Stream => {}
         }
         self.osd_message(ui, &painter, rect, time);
         if let Some(digits) = self.digits.text() {
@@ -165,11 +170,70 @@ impl App {
         }
     }
 
+    /// The programme of the guide's channel in full, in the top-left
+    /// corner: unlike the bar, with the whole description.
+    fn programme_info(&self, ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, now: i64) {
+        let Some((idx, channel)) = self
+            .guide_channel()
+            .and_then(|i| self.playlist.channels.get(i).map(|c| (i, c)))
+        else {
+            return;
+        };
+        let colors = palette::palette(&palette::dark_visuals(ui.ctx()));
+        let body = egui::TextStyle::Body.resolve(ui.style());
+        let heading = egui::TextStyle::Heading.resolve(ui.style());
+        let mut job = egui::text::LayoutJob::default();
+        let mut add = |text: &str, font: &egui::FontId, color| {
+            job.append(text, 0.0, egui::TextFormat::simple(font.clone(), color));
+        };
+        add(&channel.name, &heading, egui::Color32::WHITE);
+        let nn = self.guide.now_next(&self.epg, idx, now);
+        match nn.now {
+            None => add(
+                "\nNo programme guide for this channel",
+                &body,
+                colors.secondary,
+            ),
+            Some(p) => {
+                let span = format!(
+                    "\n{}–{}  ",
+                    clock::local_hm(p.start),
+                    clock::local_hm(p.stop)
+                );
+                add(&span, &body, colors.time);
+                add(&p.title, &body, egui::Color32::WHITE);
+                if let Some(category) = &p.category {
+                    add(&format!("  · {category}"), &body, colors.secondary);
+                }
+                if let Some(desc) = &p.desc {
+                    add(&format!("\n\n{desc}"), &body, colors.secondary);
+                }
+            }
+        }
+        if let Some(next) = nn.next {
+            add(
+                &format!("\n\nNext  {}  ", clock::local_hm(next.start)),
+                &body,
+                colors.time,
+            );
+            add(&next.title, &body, colors.secondary);
+        }
+        let margin = 16.0;
+        job.wrap.max_width = (rect.width() * 0.5)
+            .clamp(260.0, 600.0)
+            .min(rect.width() - 2.0 * margin);
+        // Long descriptions are cut to stay clear of the bar at the bottom.
+        let room = rect.height() - self.bar.height - 3.0 * margin;
+        job.wrap.max_rows = (room / ui.text_style_height(&egui::TextStyle::Body)).max(3.0) as usize;
+        let galley = painter.layout_job(job);
+        let pos = rect.left_top() + egui::vec2(margin, margin);
+        let area = egui::Rect::from_min_size(pos, galley.size());
+        painter.rect_filled(area.expand(10.0), 6.0, egui::Color32::from_black_alpha(190));
+        painter.galley(pos, galley, egui::Color32::WHITE);
+    }
+
     /// Technical details in the top-left corner (see `InfoOverlay`).
     fn stream_info(&mut self, ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, time: f64) {
-        if !self.info.is_visible(time) {
-            return;
-        }
         if self.info.needs_refresh(time)
             && let Some(player) = &self.player
         {

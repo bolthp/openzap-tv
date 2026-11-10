@@ -93,11 +93,33 @@ enum Action {
 /// How often shown stream info is re-read from mpv (bitrate changes), seconds.
 const INFO_REFRESH_SECS: f64 = 1.0;
 
-/// The stream info panel: shown briefly when a stream starts, or pinned
-/// with the `I` key. Times are egui input times in seconds.
+/// What the `I` key shows over the video; it cycles Off → Programme →
+/// Stream → Off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum InfoMode {
+    #[default]
+    Off,
+    /// The programme in full: title, time, whole description, next.
+    Programme,
+    /// Technical details of the stream.
+    Stream,
+}
+
+impl InfoMode {
+    fn next(self) -> Self {
+        match self {
+            InfoMode::Off => InfoMode::Programme,
+            InfoMode::Programme => InfoMode::Stream,
+            InfoMode::Stream => InfoMode::Off,
+        }
+    }
+}
+
+/// The info panel: the one chosen with `I`, or else the stream info for a
+/// moment when a stream starts. Times are egui input times in seconds.
 #[derive(Debug, Default)]
 struct InfoOverlay {
-    pinned: bool,
+    mode: InfoMode,
     /// A stream started; the brief display begins on the next frame.
     brief_pending: bool,
     brief_until: Option<f64>,
@@ -106,8 +128,8 @@ struct InfoOverlay {
 }
 
 impl InfoOverlay {
-    fn toggle(&mut self) {
-        self.pinned = !self.pinned;
+    fn cycle(&mut self) {
+        self.mode = self.mode.next();
         self.brief_until = None;
         self.brief_pending = false;
     }
@@ -124,11 +146,15 @@ impl InfoOverlay {
         self.brief_pending = false;
     }
 
-    fn is_visible(&mut self, time: f64) -> bool {
+    /// The panel to show now (`Off`: none).
+    fn shown(&mut self, time: f64) -> InfoMode {
         if std::mem::take(&mut self.brief_pending) {
             self.brief_until = Some(time + INFO_BRIEF_SECS);
         }
-        self.pinned || self.brief_until.is_some_and(|until| time < until)
+        match self.mode {
+            InfoMode::Off if self.brief_until.is_some_and(|until| time < until) => InfoMode::Stream,
+            mode => mode,
+        }
     }
 
     fn needs_refresh(&self, time: f64) -> bool {
@@ -1015,7 +1041,7 @@ impl App {
             self.toggle_mute(time);
         }
         if pressed(egui::Key::I) {
-            self.info.toggle();
+            self.info.cycle();
         }
         if pressed(egui::Key::L) {
             self.toggle_list(time);
@@ -2089,23 +2115,28 @@ mod tests {
     }
 
     #[test]
-    fn stream_info_shows_briefly_on_start_and_toggles() {
+    fn stream_info_shows_briefly_on_start() {
         let mut info = InfoOverlay::default();
-        assert!(!info.is_visible(0.0));
-
+        assert_eq!(info.shown(0.0), InfoMode::Off);
         info.stream_started();
-        assert!(info.is_visible(10.0));
-        assert!(info.is_visible(10.0 + INFO_BRIEF_SECS - 0.1));
-        assert!(!info.is_visible(10.0 + INFO_BRIEF_SECS));
+        assert_eq!(info.shown(10.0), InfoMode::Stream);
+        assert_eq!(info.shown(10.0 + INFO_BRIEF_SECS - 0.1), InfoMode::Stream);
+        assert_eq!(info.shown(10.0 + INFO_BRIEF_SECS), InfoMode::Off);
+    }
 
-        info.toggle();
-        assert!(info.is_visible(100.0));
-        // Pinned info survives channel changes.
+    #[test]
+    fn info_key_cycles_programme_stream_off() {
+        let mut info = InfoOverlay::default();
+        info.cycle();
+        assert_eq!(info.shown(100.0), InfoMode::Programme);
+        // The chosen panel stays over channel changes; no brief stream info.
         info.reset();
         info.stream_started();
-        assert!(info.is_visible(1000.0));
-        info.toggle();
-        assert!(!info.is_visible(1000.0));
+        assert_eq!(info.shown(101.0), InfoMode::Programme);
+        info.cycle();
+        assert_eq!(info.shown(102.0), InfoMode::Stream);
+        info.cycle();
+        assert_eq!(info.shown(103.0), InfoMode::Off);
     }
 
     #[test]
@@ -2127,7 +2158,7 @@ mod tests {
         app.apply_event(PlayerEvent::Loading);
         assert!(app.info.lines.is_empty());
         app.apply_event(PlayerEvent::Started);
-        assert!(app.info.is_visible(1.0));
+        assert_eq!(app.info.shown(1.0), InfoMode::Stream);
     }
 
     #[test]

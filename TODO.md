@@ -21,7 +21,6 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
 - [ ] Archive marks in the programme guide (once archive exists).
 - [ ] **Timeshift** on archive channels: pause live, jump to the programme
       start, seek ±15 s / 1 / 3 / 10 min, previous/next programme, back to live.
-- [ ] `I` cycles: channel + programme → programme description → stream info → off.
 - [ ] Fullscreen-first navigation: channel list and group picker as overlays
       over the video, fully usable from the keyboard (and a remote or a
       gamepad, see "Gamepads and Steam Deck").

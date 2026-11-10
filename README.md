@@ -97,7 +97,7 @@ folder; choose files elsewhere with **Browse…**.
 | `T` | always on top |
 | `R` | restart the stream (also after "no picture for 20 s") |
 | `G` | programme guide of the channel (`Esc` closes it) |
-| `I` | show / hide stream info (resolution, codecs, HDR, decoder, bitrate) |
+| `I` | info: the programme in full (whole description, next) → stream info (resolution, codecs, HDR, decoder, bitrate) → off |
 
 Moving the mouse over the video brings up the bar with the programme guide
 and the controls; it hides again after a few seconds. The guide is for the
