@@ -342,8 +342,9 @@ pub struct App {
     window_logged: bool,
     /// Play the restored last channel once the startup load finishes.
     resume_on_load: bool,
-    /// Where saved copies of downloaded sources go (`None`: not saved).
-    sources_cache: Option<PathBuf>,
+    /// The cache folder: logos and saved copies of downloaded sources
+    /// (`None`: nothing is cached on disk).
+    cache_root: Option<PathBuf>,
     /// When the playlist and guide were downloaded (Unix seconds); `None`
     /// for local files and before the first load.
     playlist_downloaded_at: Option<i64>,
@@ -384,7 +385,7 @@ impl App {
         app.volume = config.volume;
         app.on_top_supported = platform::can_keep_on_top(platform::is_wayland());
         app.autoload = !playlist_input.is_empty();
-        app.sources_cache = cache::default_root().map(|root| root.join("sources"));
+        app.cache_root = cache::default_root();
         app.resume_on_load = config.resume_last;
         // First start: nothing to show yet, so ask for a playlist right away.
         if playlist_input.is_empty() {
@@ -455,7 +456,7 @@ impl App {
             autoload: false,
             window_logged: false,
             resume_on_load: false,
-            sources_cache: None,
+            cache_root: None,
             playlist_downloaded_at: None,
             epg_downloaded_at: None,
             load_started_at: 0,
@@ -484,7 +485,7 @@ impl App {
             playlist_fetch: playlist,
             epg_fetch: epg,
             now,
-            cache_dir: self.sources_cache.clone(),
+            cache_dir: self.cache_root.as_ref().map(|root| root.join("sources")),
             // Used when the playlist is not reloaded or fails; without one
             // all guide channels are kept.
             channels: (!self.playlist.channels.is_empty())
@@ -1100,6 +1101,32 @@ impl App {
         }
     }
 
+    /// Clears the cache when the settings dialog asks for it. Logos already
+    /// on screen stay; saved sources are downloaded again next time.
+    fn update_cache_request(&mut self) {
+        let Some(draft) = &mut self.settings else {
+            return;
+        };
+        if !std::mem::take(&mut draft.clear_cache) {
+            return;
+        }
+        let Some(root) = &self.cache_root else {
+            return;
+        };
+        let mut failed = None;
+        for dir in ["logos", "sources"] {
+            if let Err(e) = cache::clear(&root.join(dir)) {
+                failed = Some(e);
+            }
+        }
+        draft.cache_size = Some(cache::size(root));
+        self.dlog(&format!("cache cleared: {failed:?}"));
+        if let Some(e) = failed {
+            self.notices
+                .push(format!("Cannot clear the cache completely: {e}"));
+        }
+    }
+
     /// Gives up on a stream that has shown no picture for `STALL_SECS`.
     fn check_stall(&mut self, time: f64) {
         let waiting = match self.stream {
@@ -1232,11 +1259,10 @@ impl App {
                 Action::SetAudio(id) => self.select_audio_track(id, time),
                 Action::SetSubtitle(id) => self.select_subtitle(id, time),
                 Action::OpenSettings => {
-                    self.settings = Some(SettingsDraft::new(
-                        &self.playlist_input,
-                        &self.epg_input,
-                        &self.config,
-                    ));
+                    let mut draft =
+                        SettingsDraft::new(&self.playlist_input, &self.epg_input, &self.config);
+                    draft.cache_size = self.cache_root.as_deref().map(cache::size);
+                    self.settings = Some(draft);
                 }
                 Action::Reload => self.start_load(ctx, Fetch::Download, Fetch::Download),
             }
@@ -1479,6 +1505,7 @@ impl eframe::App for App {
         self.schedule_panel(ui.ctx(), screen, now);
         let ctx = ui.ctx().clone();
         self.update_file_pick(&ctx);
+        self.update_cache_request();
         if let Some(draft) = &mut self.settings
             && let Some(outcome) = settings::show(&ctx, draft)
         {
@@ -2374,6 +2401,28 @@ mod tests {
         assert_eq!(d.epg, "/data/guide.xml.gz");
         assert!(d.playlist.is_empty() && !d.picking);
         assert!(app.file_pick.is_none());
+    }
+
+    #[test]
+    fn clearing_the_cache_empties_logos_and_saved_sources() {
+        let root = std::env::temp_dir().join(format!("openzap-app-cache-{}", std::process::id()));
+        for (dir, file) in [("logos", "a.img"), ("sources", "b.epg")] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join(file), [0u8; 10]).unwrap();
+        }
+        let mut app = App::new(Playlist::default(), Epg::default(), vec![]);
+        app.cache_root = Some(root.clone());
+        app.actions.push(Action::OpenSettings);
+        app.apply_actions(&egui::Context::default());
+        assert_eq!(app.settings.as_ref().unwrap().cache_size, Some(20));
+
+        app.settings.as_mut().unwrap().clear_cache = true;
+        app.update_cache_request();
+        let draft = app.settings.as_ref().unwrap();
+        assert_eq!(draft.cache_size, Some(0));
+        assert!(!draft.clear_cache, "done once");
+        assert!(app.notices.is_empty());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

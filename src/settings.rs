@@ -1,6 +1,7 @@
 //! The settings dialog. It edits a draft; nothing changes until Save.
 
 use eframe::egui;
+use openzap::cache;
 use openzap::config::{Config, Theme, UpdatePolicy};
 use openzap::player::{HardwareDecoding, PlaybackSettings};
 
@@ -16,6 +17,10 @@ pub struct SettingsDraft {
     pub theme: Theme,
     pub playlist_update: UpdatePolicy,
     pub epg_update: UpdatePolicy,
+    /// Size of the cache folder (`None`: no cache on disk).
+    pub cache_size: Option<u64>,
+    /// "Clear" was clicked; the app clears the cache right away.
+    pub clear_cache: bool,
     /// A "browse" button was clicked; the app opens the file dialog.
     pub pick_request: Option<PickTarget>,
     /// A file dialog is open (the browse buttons are disabled meanwhile).
@@ -34,6 +39,8 @@ impl SettingsDraft {
             theme: config.view.theme,
             playlist_update: config.playlist_update,
             epg_update: config.epg_update,
+            cache_size: None,
+            clear_cache: false,
             pick_request: None,
             picking: false,
         }
@@ -142,6 +149,22 @@ pub fn show(ctx: &egui::Context, draft: &mut SettingsDraft) -> Option<Outcome> {
                     });
                 ui.end_row();
             });
+
+        if let Some(size) = draft.cache_size {
+            section(ui, "Cache");
+            ui.horizontal(|ui| {
+                ui.label(format!(
+                    "Logos and saved playlists and guides: {}",
+                    cache::format_size(size)
+                ));
+                let clear = ui
+                    .add_enabled(size > 0, egui::Button::new("Clear"))
+                    .on_hover_text("Deletes them now; they are downloaded again when needed");
+                if clear.clicked() {
+                    draft.clear_cache = true;
+                }
+            });
+        }
 
         section(ui, "Startup");
         ui.checkbox(&mut draft.resume_last, "Resume the last channel on start");

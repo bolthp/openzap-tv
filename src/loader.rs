@@ -74,8 +74,33 @@ pub enum LoadEvent {
 }
 
 /// Blocking: call it from a background thread. Stops early (sending
-/// nothing more) once `cancel` is set.
-pub fn run(req: &Request, cancel: &AtomicBool, mut send: impl FnMut(LoadEvent)) {
+/// nothing more) once `cancel` is set. Afterwards, saved copies of sources
+/// no longer in use are deleted.
+pub fn run(req: &Request, cancel: &AtomicBool, send: impl FnMut(LoadEvent)) {
+    load(req, cancel, send);
+    if cancel.load(Ordering::Relaxed) {
+        return;
+    }
+    if let Some(dir) = &req.cache_dir {
+        let keep: Vec<String> = [(&req.playlist, "playlist"), (&req.epg, "epg")]
+            .into_iter()
+            .filter_map(|(input, kind)| saved_copy_name(input, kind))
+            .collect();
+        // Only costs disk space if it fails.
+        let _ = cache::remove_unused(dir, &keep);
+    }
+}
+
+/// File name of the saved copy of `input` (only sources from the internet
+/// have one); `kind` is "playlist" or "epg".
+fn saved_copy_name(input: &str, kind: &str) -> Option<String> {
+    match Source::parse(input) {
+        Source::Url(url) => Some(cache::file_name(&url, kind)),
+        Source::File(_) => None,
+    }
+}
+
+fn load(req: &Request, cancel: &AtomicBool, mut send: impl FnMut(LoadEvent)) {
     let cancelled = || cancel.load(Ordering::Relaxed);
     let mut channels = req.channels.clone();
     if req.playlist_fetch != Fetch::Keep {
@@ -147,13 +172,11 @@ struct Fetching {
 impl Fetching {
     fn new(req: &Request, input: &str, kind: &str, fetch: Fetch) -> Self {
         let source = Source::parse(input);
-        let saved = match &source {
-            Source::Url(url) => req
-                .cache_dir
-                .as_ref()
-                .map(|dir| dir.join(cache::file_name(url, kind))),
-            Source::File(_) => None,
-        };
+        let saved = req
+            .cache_dir
+            .as_ref()
+            .zip(saved_copy_name(input, kind))
+            .map(|(dir, name)| dir.join(name));
         Fetching {
             source,
             fetch,
@@ -579,6 +602,26 @@ mod tests {
         std::fs::remove_dir_all(&cache).unwrap();
         // Nothing saved: the error itself.
         assert!(playlist_of(&events(&req)).is_err());
+    }
+
+    #[test]
+    fn copies_of_sources_no_longer_used_are_deleted() {
+        let cache = temp_dir("unused");
+        let old = cache.join(cache::file_name("http://example.com/old.xml", "epg"));
+        std::fs::write(&old, EPG).unwrap();
+        let current = cache.join(cache::file_name(DEAD_URL, "playlist"));
+        std::fs::write(&current, PLAYLIST).unwrap();
+        let mut req = request(DEAD_URL, "");
+        req.cache_dir = Some(cache.clone());
+        events(&req);
+        assert!(!old.exists(), "the old guide's copy is gone");
+        assert!(current.exists(), "the playlist's copy stays");
+
+        // A cancelled load leaves everything alone.
+        std::fs::write(&old, EPG).unwrap();
+        run(&req, &AtomicBool::new(true), |_| {});
+        assert!(old.exists());
+        std::fs::remove_dir_all(&cache).unwrap();
     }
 
     #[test]

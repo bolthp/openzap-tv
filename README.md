@@ -71,6 +71,8 @@ keys, so keep it private. The window size and position are kept next to it in
 `window.ron`. Logos and saved copies of downloaded playlists and guides are
 kept in `~/.cache/openzap` on Linux and `%LOCALAPPDATA%\OpenZap\cache` on
 Windows (`logos`, `sources`); saved playlists may contain access keys too.
+Copies of sources no longer in the settings are deleted after a load;
+**Settings → Cache → Clear** deletes everything there.
 The Flatpak keeps all of this in `~/.var/app/io.github.bolthp.OpenZap/`
 (`config/openzap`, `cache/openzap`); on its first start it takes over the
 settings of the tar.gz build, if there are any. It can read files in your home

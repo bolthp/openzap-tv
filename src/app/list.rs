@@ -136,9 +136,9 @@ impl App {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.heading("OpenZap");
+            // What is loading is told under the filters, where there is room.
             if let Some(text) = self.loading_text() {
-                ui.spinner();
-                ui.weak(text);
+                ui.spinner().on_hover_text(text);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("⚙").on_hover_text("Settings").clicked() {
@@ -201,7 +201,11 @@ impl App {
         if changed {
             self.refilter();
         }
-        ui.weak(format!("{} channels", self.visible.len()));
+        let count = format!("{} channels", self.visible.len());
+        match self.loading_text() {
+            Some(loading) => ui.weak(format!("{count} · {loading}")),
+            None => ui.weak(count),
+        };
     }
 
     fn list_rows(&mut self, ui: &mut egui::Ui, now: i64) {

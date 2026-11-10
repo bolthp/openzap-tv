@@ -52,14 +52,9 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
       `http-proxy`, ureq supports proxies. Today streams that need it only
       work through a system VPN.
 
-## Cache
-
-- [ ] Remove saved copies of sources no longer in use (`cache/sources`).
-
 ## Logos
 
 - [ ] Limit the logo textures kept in memory (LRU) for very long lists.
-- [ ] A "clear cache" button in Settings.
 
 ## Testing
 
