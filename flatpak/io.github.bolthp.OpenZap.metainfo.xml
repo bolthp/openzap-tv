@@ -40,6 +40,11 @@
     <control>pointing</control>
   </supports>
   <releases>
+    <release version="0.4.1" date="2026-11-10">
+      <description>
+        <p>Clear the cache from the settings, the I key shows the whole programme description, picture size per channel.</p>
+      </description>
+    </release>
     <release version="0.4.0" date="2026-11-10">
       <description>
         <p>First Flatpak release, with its own libmpv: runs on any distribution and on the Steam Deck.</p>
