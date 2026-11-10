@@ -93,7 +93,7 @@ folder; choose files elsewhere with **Browse…**.
 | `L` | show / hide the channel list (fullscreen: keep it open) |
 | `A` | next audio track (when the stream has several) |
 | `S` | subtitles: off → each track → off (when the stream has any) |
-| `Z` | picture size: auto, 16:9, 4:3, fill (crop), stretch |
+| `Z` | picture size of this channel (remembered per channel): auto, 16:9, 4:3, fill (crop), stretch |
 | `T` | always on top |
 | `R` | restart the stream (also after "no picture for 20 s") |
 | `G` | programme guide of the channel (`Esc` closes it) |

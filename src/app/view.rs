@@ -552,7 +552,7 @@ impl App {
         if ui.button("⚙").on_hover_text("Settings").clicked() {
             self.actions.push(Action::OpenSettings);
         }
-        let aspect = self.config.view.aspect;
+        let aspect = self.current_aspect();
         egui::ComboBox::from_id_salt("aspect")
             .selected_text(aspect.label())
             .show_ui(ui, |ui| {
@@ -563,7 +563,7 @@ impl App {
                 }
             })
             .response
-            .on_hover_text("Picture size (Z)");
+            .on_hover_text("Picture size of this channel (Z)");
         if !self.subtitles.is_empty() {
             let current = self
                 .subtitles

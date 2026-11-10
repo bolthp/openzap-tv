@@ -803,9 +803,6 @@ impl App {
                 self.notices.push(format!("Cannot watch {name}: {e}"));
             }
         }
-        if let Err(e) = player.set_aspect(self.config.view.aspect) {
-            self.dlog(&format!("cannot set picture size: {e}"));
-        }
         self.player = Some(player);
         true
     }
@@ -826,6 +823,10 @@ impl App {
             return;
         };
         self.dlog(&format!("play channel #{idx}: {}", channel.name));
+        let aspect = self.config.aspect_for(channel.key());
+        if let Some(Err(e)) = self.player.as_ref().map(|p| p.set_aspect(aspect)) {
+            self.dlog(&format!("cannot set picture size: {e}"));
+        }
         let result = self.player.as_ref().map(|p| p.load(&channel.url));
         match result {
             Some(Ok(())) => {
@@ -1050,7 +1051,7 @@ impl App {
             self.toggle_on_top(time);
         }
         if pressed(egui::Key::Z) {
-            self.set_aspect(self.config.view.aspect.next(), time);
+            self.set_aspect(self.current_aspect().next(), time);
         }
         if pressed(egui::Key::A) {
             self.next_audio_track(time);
@@ -1336,9 +1337,25 @@ impl App {
         self.show_osd(text, time);
     }
 
+    /// The channel on screen (or last started), whose picture size the
+    /// controls change.
+    fn screen_channel_key(&self) -> Option<String> {
+        let idx = self.playing.or(self.current)?;
+        Some(self.playlist.channels.get(idx)?.key().to_string())
+    }
+
+    /// Picture size of the channel on screen.
+    fn current_aspect(&self) -> AspectMode {
+        self.screen_channel_key()
+            .map_or(AspectMode::Auto, |key| self.config.aspect_for(&key))
+    }
+
+    /// Changes the picture size, remembered for the channel on screen.
     fn set_aspect(&mut self, mode: AspectMode, time: f64) {
-        self.config.view.aspect = mode;
-        self.pending_save = true;
+        if let Some(key) = self.screen_channel_key() {
+            self.config.set_aspect_for(&key, mode);
+            self.pending_save = true;
+        }
         if let Some(Err(e)) = self.player.as_ref().map(|p| p.set_aspect(mode)) {
             self.status = format!("Cannot change picture size: {e}");
         }
@@ -2179,12 +2196,34 @@ mod tests {
         assert!(!view.list_visible);
         assert_eq!(view.list_side, Side::Right);
         assert!(view.always_on_top);
-        assert_eq!(view.aspect, AspectMode::Fill);
         assert!(app.pending_save && app.actions.is_empty());
         assert_eq!(
             app.osd.map(|(t, _)| t).as_deref(),
             Some("Picture: Fill (crop)")
         );
+    }
+
+    #[test]
+    fn picture_size_is_remembered_per_channel() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+        app.set_aspect(AspectMode::Fill, 0.0);
+        assert!(app.config.channel_aspect.is_empty(), "nothing on screen");
+
+        app.current = Some(1);
+        app.set_aspect(AspectMode::Ratio4x3, 0.0);
+        assert_eq!(app.current_aspect(), AspectMode::Ratio4x3);
+        assert_eq!(app.config.aspect_for("film.example"), AspectMode::Ratio4x3);
+        assert!(app.pending_save);
+        app.current = Some(2);
+        assert_eq!(
+            app.current_aspect(),
+            AspectMode::Auto,
+            "other channels unchanged"
+        );
+        app.current = Some(1);
+        app.set_aspect(AspectMode::Auto, 0.0);
+        assert!(app.config.channel_aspect.is_empty());
     }
 
     #[test]

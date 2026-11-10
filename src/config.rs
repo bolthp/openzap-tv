@@ -3,7 +3,7 @@
 //! The file may contain URLs with access keys, so it is created readable
 //! by the owner only (on Unix) and its content is never logged.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -85,13 +85,12 @@ impl UpdatePolicy {
     }
 }
 
-/// Window layout and picture preferences.
+/// Window layout preferences.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ViewSettings {
     pub list_side: Side,
     pub list_visible: bool,
     pub always_on_top: bool,
-    pub aspect: AspectMode,
     pub theme: Theme,
 }
 
@@ -101,7 +100,6 @@ impl Default for ViewSettings {
             list_side: Side::Left,
             list_visible: true,
             always_on_top: false,
-            aspect: AspectMode::Auto,
             theme: Theme::System,
         }
     }
@@ -148,6 +146,9 @@ pub struct Config {
     pub view: ViewSettings,
     pub playlist_update: UpdatePolicy,
     pub epg_update: UpdatePolicy,
+    /// Picture size chosen for a channel (by `Channel::key`); channels not
+    /// listed use `AspectMode::Auto`.
+    pub channel_aspect: BTreeMap<String, AspectMode>,
 }
 
 impl Default for Config {
@@ -165,11 +166,29 @@ impl Default for Config {
             // big and published once a day.
             playlist_update: UpdatePolicy::OnStart,
             epg_update: UpdatePolicy::Daily,
+            channel_aspect: BTreeMap::new(),
         }
     }
 }
 
 impl Config {
+    /// The picture size for the channel with this key.
+    pub fn aspect_for(&self, channel_key: &str) -> AspectMode {
+        self.channel_aspect
+            .get(channel_key)
+            .copied()
+            .unwrap_or(AspectMode::Auto)
+    }
+
+    /// Remembers the picture size for a channel (`Auto` forgets it).
+    pub fn set_aspect_for(&mut self, channel_key: &str, mode: AspectMode) {
+        if mode == AspectMode::Auto {
+            self.channel_aspect.remove(channel_key);
+        } else {
+            self.channel_aspect.insert(channel_key.to_string(), mode);
+        }
+    }
+
     /// Lenient: unknown keys, comments and malformed lines are ignored.
     pub fn parse(text: &str) -> Self {
         let mut cfg = Config::default();
@@ -223,9 +242,14 @@ impl Config {
                         cfg.view.always_on_top = v;
                     }
                 }
-                "aspect" => {
-                    if let Some(&mode) = AspectMode::ALL.iter().find(|&&m| aspect_key(m) == value) {
-                        cfg.view.aspect = mode;
+                // "<mode> <channel key>": the key may contain anything.
+                "channel_aspect" => {
+                    if let Some((mode, key)) = value.split_once(' ')
+                        && let Some(&mode) =
+                            AspectMode::ALL.iter().find(|&&m| aspect_key(m) == mode)
+                        && !key.trim().is_empty()
+                    {
+                        cfg.set_aspect_for(key.trim(), mode);
                     }
                 }
                 "theme" => {
@@ -289,13 +313,19 @@ impl Config {
             "always_on_top={}\n",
             yes_no(self.view.always_on_top)
         ));
-        out.push_str(&format!("aspect={}\n", aspect_key(self.view.aspect)));
         out.push_str(&format!("theme={}\n", self.view.theme.key()));
         if let Some(c) = &self.last_channel {
             out.push_str(&format!("last_channel={}\n", one_line(c)));
         }
         for key in &self.favorites {
             out.push_str(&format!("favorite={}\n", one_line(key)));
+        }
+        for (key, mode) in &self.channel_aspect {
+            out.push_str(&format!(
+                "channel_aspect={} {}\n",
+                aspect_key(*mode),
+                one_line(key)
+            ));
         }
         out
     }
@@ -420,11 +450,15 @@ mod tests {
                 list_side: Side::Right,
                 list_visible: false,
                 always_on_top: true,
-                aspect: AspectMode::Fill,
                 theme: Theme::Dark,
             },
             playlist_update: UpdatePolicy::Never,
             epg_update: UpdatePolicy::OnStart,
+            channel_aspect: [
+                ("news.example".to_string(), AspectMode::Fill),
+                ("Sport = One HD".to_string(), AspectMode::Ratio4x3),
+            ]
+            .into(),
         };
         assert_eq!(Config::parse(&cfg.serialize()), cfg);
     }
@@ -463,22 +497,27 @@ mod tests {
     #[test]
     fn view_settings_parse_leniently() {
         assert_eq!(Config::parse("").view, ViewSettings::default());
-        for mode in AspectMode::ALL {
-            let cfg = Config {
-                view: ViewSettings {
-                    aspect: mode,
-                    ..ViewSettings::default()
-                },
-                ..Config::default()
-            };
-            assert_eq!(Config::parse(&cfg.serialize()).view.aspect, mode);
-        }
         for theme in Theme::ALL {
             let text = format!("theme={}\n", theme.key());
             assert_eq!(Config::parse(&text).view.theme, theme);
         }
         let cfg = Config::parse("list_side=top\nlist_visible=maybe\naspect=21:9\ntheme=pink\n");
         assert_eq!(cfg.view, ViewSettings::default());
+    }
+
+    #[test]
+    fn picture_size_is_kept_per_channel() {
+        let mut cfg = Config::default();
+        for mode in AspectMode::ALL {
+            cfg.set_aspect_for("a", mode);
+            assert_eq!(Config::parse(&cfg.serialize()).aspect_for("a"), mode);
+        }
+        cfg.set_aspect_for("a", AspectMode::Auto);
+        assert!(cfg.channel_aspect.is_empty(), "Auto is not stored");
+        assert_eq!(cfg.aspect_for("unknown"), AspectMode::Auto);
+        // Broken lines and the old global setting are ignored.
+        let cfg = Config::parse("channel_aspect=fill\nchannel_aspect=huge x\naspect=fill\n");
+        assert!(cfg.channel_aspect.is_empty());
     }
 
     #[test]
