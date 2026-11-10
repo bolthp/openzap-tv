@@ -40,6 +40,11 @@
     <control>pointing</control>
   </supports>
   <releases>
+    <release version="0.4.0" date="2026-11-10">
+      <description>
+        <p>First Flatpak release, with its own libmpv: runs on any distribution and on the Steam Deck.</p>
+      </description>
+    </release>
     <release version="0.3.2" date="2026-11-10"/>
     <release version="0.3.1" date="2026-11-06"/>
     <release version="0.3.0" date="2026-11-03"/>
