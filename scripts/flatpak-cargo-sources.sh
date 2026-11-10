@@ -24,7 +24,11 @@ if ! deps_ok; then
     # pip install into the user's site-packages, outside the venv).
     "$python" -m pip install --isolated --quiet --disable-pip-version-check \
         'aiohttp>=3.9.5,<4' 'tomlkit>=0.13.3,<1' 'PyYAML>=6.0.2,<7'
-    deps_ok || { echo "cannot set up the Python modules for the generator" >&2; exit 1; }
+    if ! deps_ok; then
+        echo "cannot set up the Python modules for the generator:" >&2
+        "$python" -I -c 'import aiohttp, tomlkit, yaml' || true
+        exit 1
+    fi
 fi
 "$python" -I "$generator" "$root/Cargo.lock" -o "$root/flatpak/cargo-sources.json"
 echo "wrote flatpak/cargo-sources.json"

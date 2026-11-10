@@ -74,8 +74,23 @@ jobs:
           path: ${{ env.ASSET }}
           if-no-files-found: error
 
+  # On a plain runner: the Flatpak container's Python could not set up the
+  # generator's modules.
+  cargo-sources:
+    name: Flatpak cargo sources
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: scripts/flatpak-cargo-sources.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cargo-sources
+          path: flatpak/cargo-sources.json
+          if-no-files-found: error
+
   flatpak:
     name: Build (flatpak-x86_64)
+    needs: cargo-sources
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-26.08
@@ -88,8 +103,10 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           echo "RELEASE_NAME=$(scripts/release-name.sh)" >> "$GITHUB_ENV"
 
-      - name: Cargo sources
-        run: scripts/flatpak-cargo-sources.sh
+      - uses: actions/download-artifact@v8
+        with:
+          name: cargo-sources
+          path: flatpak
 
       # Builds libmpv and FFmpeg too; the cache keeps them between releases.
       - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
@@ -114,6 +131,7 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           path: dist
+          pattern: "*-x86_64"
           merge-multiple: true
 
       - name: Create release
