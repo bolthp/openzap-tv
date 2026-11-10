@@ -173,6 +173,7 @@ pub fn show(ctx: &egui::Context, draft: &mut SettingsDraft) -> Option<Outcome> {
         ui.separator();
         let mut outcome = None;
         ui.horizontal(|ui| {
+            ui.weak(version_label());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("Save").clicked() {
                     outcome = Some(Outcome::Save);
@@ -217,6 +218,11 @@ fn source_field(
     });
 }
 
+/// "OpenZap 0.4.1", shown at the bottom of the dialog.
+fn version_label() -> &'static str {
+    concat!("OpenZap ", env!("CARGO_PKG_VERSION"))
+}
+
 fn policy_combo(ui: &mut egui::Ui, id: &str, policy: &mut UpdatePolicy) {
     egui::ComboBox::from_id_salt(id)
         .selected_text(policy.label())
@@ -238,5 +244,18 @@ fn hwdec_label(mode: HardwareDecoding) -> &'static str {
     match mode {
         HardwareDecoding::Off => "Off (CPU)",
         HardwareDecoding::Auto => "Auto (GPU when possible)",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_label_names_the_build() {
+        assert_eq!(
+            version_label(),
+            format!("OpenZap {}", env!("CARGO_PKG_VERSION"))
+        );
     }
 }
