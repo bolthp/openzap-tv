@@ -92,7 +92,8 @@ Windows (`logos`, `sources`); saved playlists may contain access keys too.
 Moving the mouse over the video brings up the bar with the programme guide
 and the controls; it hides again after a few seconds. The guide is for the
 channel selected in the list (clicking a channel brings the bar up), or the
-one playing if nothing else is selected.
+one playing if nothing else is selected. Opening the guide panel, or bringing
+the list back, returns to the channel playing.
 In fullscreen, moving the mouse to the window edge where the list belongs
 slides it in over the video; it slides away when the mouse leaves it, unless
 pinned with `L` or the list button.

@@ -101,6 +101,7 @@ impl App {
         if let Some(secs) = self.list_overlay.remaining(time) {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(secs.max(0.05)));
         }
+        self.list_on_screen(shown > 0.0);
         if shown <= 0.0 {
             self.list_overlay.rect = None;
             return;

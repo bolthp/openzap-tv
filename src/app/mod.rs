@@ -298,6 +298,8 @@ pub struct App {
     tracks_refreshed_at: Option<f64>,
     /// Scroll the list to this channel on the next frame.
     scroll_to: Option<usize>,
+    /// The channel list was on screen last frame.
+    list_was_shown: bool,
     /// The theme still needs to be sent to egui.
     view_pending: bool,
     /// The window is fullscreen (as of the start of this frame).
@@ -428,6 +430,7 @@ impl App {
             sub_pos_applied: None,
             tracks_refreshed_at: None,
             scroll_to: None,
+            list_was_shown: false,
             view_pending: true,
             on_top_applied: None,
             // Real value set in `from_args`; tests stay independent of the session.
@@ -663,6 +666,7 @@ impl App {
             self.group = None;
         }
         self.refilter();
+        self.scroll_to = self.selected;
     }
 
     fn toggle_favorite(&mut self, idx: usize) {
@@ -1000,7 +1004,7 @@ impl App {
             self.set_fullscreen(ctx, false);
         }
         if pressed(egui::Key::G) {
-            self.schedule.toggle();
+            self.toggle_schedule();
         }
         if pressed(egui::Key::R) {
             self.restart();
@@ -1156,6 +1160,33 @@ impl App {
         self.selected.or(self.playing)
     }
 
+    /// Back to the channel playing: it becomes the selected one (so the
+    /// guide is about it again) and the list scrolls to it.
+    fn focus_current(&mut self) {
+        if let Some(idx) = self.playing {
+            self.selected = Some(idx);
+        }
+        self.scroll_to = self.selected;
+    }
+
+    /// Opening the guide panel starts at the channel playing.
+    fn toggle_schedule(&mut self) {
+        self.schedule.toggle();
+        if self.schedule.open {
+            self.focus_current();
+        }
+    }
+
+    /// Call once per frame with whether the channel list is on screen:
+    /// when it comes up, it shows the channel playing.
+    fn list_on_screen(&mut self, shown: bool) {
+        let appeared = shown && !self.list_was_shown;
+        self.list_was_shown = shown;
+        if appeared {
+            self.focus_current();
+        }
+    }
+
     /// Selects a channel in the list without playing it; the bar comes up
     /// with its programme.
     fn select(&mut self, idx: usize) {
@@ -1193,7 +1224,7 @@ impl App {
                     self.pending_save = true;
                 }
                 Action::ToggleOnTop => self.toggle_on_top(time),
-                Action::ToggleSchedule => self.schedule.toggle(),
+                Action::ToggleSchedule => self.toggle_schedule(),
                 Action::Restart => self.restart(),
                 Action::ToggleFullscreen => self.set_fullscreen(ctx, !is_fullscreen(ctx)),
                 Action::SetAspect(mode) => self.set_aspect(mode, time),
@@ -1422,7 +1453,11 @@ impl eframe::App for App {
         self.fullscreen = fullscreen;
         let mode = list_mode(fullscreen, self.config.view.list_visible);
         let screen = ui.max_rect();
+        if mode == ListMode::Hidden {
+            self.list_on_screen(false);
+        }
         if mode == ListMode::Docked {
+            self.list_on_screen(true);
             let panel = match self.config.view.list_side {
                 Side::Left => egui::Panel::left("channels"),
                 Side::Right => egui::Panel::right("channels"),
@@ -1532,10 +1567,13 @@ fn window_drag_background(ui: &mut egui::Ui, fullscreen: bool) {
     if fullscreen {
         return;
     }
+    // Also senses clicks: a drag-only widget starts dragging on the press
+    // itself, and once the OS has taken over the pointer, clicks (and
+    // double-clicks) on the rows above it are lost.
     let response = ui.interact(
         ui.max_rect(),
         ui.unique_id().with("window-drag"),
-        egui::Sense::drag(),
+        egui::Sense::click_and_drag(),
     );
     drag_window(&response, fullscreen);
 }
@@ -2150,6 +2188,45 @@ mod tests {
     }
 
     #[test]
+    fn reopened_guide_returns_to_the_channel_playing() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+        app.playing = Some(0);
+        app.toggle_schedule();
+        app.select(2); // browsing in the list moves the guide along
+        assert_eq!(app.guide_channel(), Some(2));
+        app.toggle_schedule(); // closed: nothing changes
+        assert_eq!(app.guide_channel(), Some(2));
+        app.toggle_schedule();
+        assert_eq!(app.guide_channel(), Some(0));
+        assert_eq!(app.scroll_to, Some(0));
+    }
+
+    #[test]
+    fn list_coming_up_shows_the_channel_playing() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+        app.playing = Some(1);
+        app.list_on_screen(true);
+        assert_eq!((app.selected, app.scroll_to), (Some(1), Some(1)));
+        // While it stays up, the user's scrolling and selection are kept.
+        app.scroll_to = None;
+        app.select(2);
+        app.list_on_screen(true);
+        assert_eq!((app.selected, app.scroll_to), (Some(2), None));
+        app.list_on_screen(false);
+        app.list_on_screen(true);
+        assert_eq!((app.selected, app.scroll_to), (Some(1), Some(1)));
+
+        // Nothing playing: the selection stays and is scrolled to.
+        app.playing = None;
+        app.selected = Some(2);
+        app.list_on_screen(false);
+        app.list_on_screen(true);
+        assert_eq!((app.selected, app.scroll_to), (Some(2), Some(2)));
+    }
+
+    #[test]
     fn guide_follows_the_selected_channel() {
         let (playlist, epg) = demo_data(0);
         let mut app = App::new(playlist, epg, vec![]);
@@ -2208,6 +2285,70 @@ mod tests {
             });
         }
         asked
+    }
+
+    /// A clickable row over a draggable background (as in the channel
+    /// list); `events` go one per frame. Returns (double-clicked, window
+    /// drag asked for).
+    fn row_over_background(frames: Vec<Vec<egui::Event>>) -> (bool, bool) {
+        let ctx = egui::Context::default();
+        let (mut double, mut drag) = (false, false);
+        for (i, events) in frames.into_iter().enumerate() {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(200.0, 100.0),
+                )),
+                // Clicks a few frames apart, well within a double-click.
+                time: Some(i as f64 * 0.05),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                window_drag_background(ui, false);
+                let row = egui::Rect::from_min_size(egui::pos2(0.0, 20.0), egui::vec2(200.0, 40.0));
+                double |= ui.allocate_rect(row, egui::Sense::click()).double_clicked();
+            });
+            output.textures_delta.clear();
+            drag |= output.viewport_output.values().any(|v| {
+                v.commands
+                    .iter()
+                    .any(|c| matches!(c, egui::ViewportCommand::StartDrag))
+            });
+        }
+        (double, drag)
+    }
+
+    fn button(x: f32, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos: egui::pos2(x, 40.0),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn double_click_on_a_row_does_not_move_the_window() {
+        let moved = egui::Event::PointerMoved(egui::pos2(50.0, 40.0));
+        let (double, drag) = row_over_background(vec![
+            vec![moved.clone()],
+            vec![button(50.0, true)],
+            vec![button(50.0, false)],
+            vec![button(50.0, true)],
+            vec![button(50.0, false)],
+            vec![],
+        ]);
+        assert!(double, "the row gets its double-click");
+        assert!(!drag, "a click is not a drag");
+
+        let (_, drag) = row_over_background(vec![
+            vec![moved],
+            vec![button(50.0, true)],
+            vec![egui::Event::PointerMoved(egui::pos2(90.0, 40.0))],
+            vec![],
+        ]);
+        assert!(drag, "dragging over a row still moves the window");
     }
 
     #[test]
