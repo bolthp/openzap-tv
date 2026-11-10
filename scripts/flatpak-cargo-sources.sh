@@ -15,9 +15,16 @@ if [ ! -f "$generator" ]; then
     curl -sfL "$url" -o "$generator.part"
     mv "$generator.part" "$generator"
 fi
-if [ ! -x "$work/venv/bin/python" ]; then
+python="$work/venv/bin/python"
+deps_ok() { "$python" -I -c 'import aiohttp, tomlkit, yaml' 2>/dev/null; }
+if ! deps_ok; then
+    rm -rf "$work/venv"
     python3 -m venv "$work/venv"
-    "$work/venv/bin/pip" install --quiet 'aiohttp>=3.9.5,<4' 'tomlkit>=0.13.3,<1' 'PyYAML>=6.0.2,<7'
+    # --isolated: ignore pip config and environment (some CI images make
+    # pip install into the user's site-packages, outside the venv).
+    "$python" -m pip install --isolated --quiet --disable-pip-version-check \
+        'aiohttp>=3.9.5,<4' 'tomlkit>=0.13.3,<1' 'PyYAML>=6.0.2,<7'
+    deps_ok || { echo "cannot set up the Python modules for the generator" >&2; exit 1; }
 fi
-"$work/venv/bin/python" -I "$generator" "$root/Cargo.lock" -o "$root/flatpak/cargo-sources.json"
+"$python" -I "$generator" "$root/Cargo.lock" -o "$root/flatpak/cargo-sources.json"
 echo "wrote flatpak/cargo-sources.json"
