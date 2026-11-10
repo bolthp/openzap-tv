@@ -92,6 +92,8 @@ pub(super) mod sys {
         pub text: *const c_char,
     }
 
+    /// `MPV_ERROR_OPTION_NOT_FOUND`: this build has no such option.
+    pub const ERROR_OPTION_NOT_FOUND: c_int = -5;
     pub const EVENT_LOG_MESSAGE: c_int = 2;
     pub const FORMAT_FLAG: c_int = 3;
     pub const FORMAT_INT64: c_int = 4;

@@ -357,9 +357,10 @@ impl App {
     /// With neither args nor saved settings, synthetic demo data is shown.
     pub fn from_args(args: &[String]) -> Self {
         let config_path = config::default_path();
+        let host_config = config::host_config_path(|name| std::env::var(name).ok());
         let config = config_path
             .as_deref()
-            .map(Config::load_from)
+            .map(|path| config::load_or_import(path, host_config.as_deref()))
             .unwrap_or_default();
 
         let playlist_input = args

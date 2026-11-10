@@ -367,6 +367,29 @@ pub fn default_path() -> Option<PathBuf> {
     config_path(Platform::current(), |name| std::env::var(name).ok())
 }
 
+/// Inside a Flatpak, settings live in the app's own folder; this is where
+/// the plain (tar.gz) build keeps them, to start from on the first run.
+/// `None` outside a Flatpak.
+pub fn host_config_path(env: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    let non_empty = |name: &str| env(name).filter(|v| !v.trim().is_empty());
+    non_empty("FLATPAK_ID")?;
+    Some(
+        PathBuf::from(non_empty("HOME")?)
+            .join(".config")
+            .join("openzap")
+            .join("config.txt"),
+    )
+}
+
+/// Reads the settings from `path`; if there are none yet, from `fallback`
+/// (see [`host_config_path`]). Saving always goes to `path`.
+pub fn load_or_import(path: &Path, fallback: Option<&Path>) -> Config {
+    match fallback {
+        Some(old) if !path.exists() && old.exists() => Config::load_from(old),
+        _ => Config::load_from(path),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -535,6 +558,30 @@ mod tests {
             window_state_path(Path::new("/home/me/.config/openzap/config.txt")),
             PathBuf::from("/home/me/.config/openzap/window.ron")
         );
+    }
+
+    #[test]
+    fn flatpak_starts_from_the_plain_builds_settings() {
+        let env = env_of(&[("HOME", "/home/me"), ("FLATPAK_ID", "io.example.App")]);
+        assert_eq!(
+            host_config_path(env),
+            Some(PathBuf::from("/home/me/.config/openzap/config.txt"))
+        );
+        assert_eq!(host_config_path(env_of(&[("HOME", "/home/me")])), None);
+
+        let dir = std::env::temp_dir().join(format!("openzap-import-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (own, old) = (dir.join("own.txt"), dir.join("old.txt"));
+        std::fs::write(&old, "volume=11\n").unwrap();
+        assert_eq!(load_or_import(&own, Some(&old)).volume, 11.0, "first run");
+        std::fs::write(&own, "volume=22\n").unwrap();
+        assert_eq!(
+            load_or_import(&own, Some(&old)).volume,
+            22.0,
+            "own settings win"
+        );
+        assert_eq!(load_or_import(&own, None).volume, 22.0);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -72,7 +72,9 @@ keys, so keep it private. The window size and position are kept next to it in
 kept in `~/.cache/openzap` on Linux and `%LOCALAPPDATA%\OpenZap\cache` on
 Windows (`logos`, `sources`); saved playlists may contain access keys too.
 The Flatpak keeps all of this in `~/.var/app/io.github.bolthp.OpenZap/`
-(`config/openzap`, `cache/openzap`).
+(`config/openzap`, `cache/openzap`); on its first start it takes over the
+settings of the tar.gz build, if there are any. It can read files in your home
+folder; choose files elsewhere with **Browse…**.
 
 ## Keyboard
 

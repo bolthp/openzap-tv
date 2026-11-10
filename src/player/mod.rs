@@ -273,11 +273,18 @@ impl Player {
         let defaults = [
             ("terminal", "no"), // never write logs (URLs!) to the terminal
             ("config", "no"),   // ignore user's mpv.conf for predictable behaviour
-            ("ytdl", "no"),     // don't run youtube-dl hooks on playlist URLs
             ("idle", "yes"),    // stay alive with no file loaded
-            ("osc", "no"),      // controls are drawn by the application
             ("input-default-bindings", "no"),
         ];
+        // Only builds with Lua scripts have these (e.g. not the Flatpak's):
+        // without them there is nothing to turn off.
+        let script_options = [
+            ("ytdl", "no"), // don't run youtube-dl hooks on playlist URLs
+            ("osc", "no"),  // controls are drawn by the application
+        ];
+        for (name, value) in script_options {
+            player.set_optional_option(name, value)?;
+        }
         for (name, value) in defaults.iter().chain(extra) {
             player.set_option(name, value)?;
         }
@@ -287,12 +294,24 @@ impl Player {
     }
 
     fn set_option(&self, name: &str, value: &str) -> Result<(), PlayerError> {
+        check(self.inner.api, self.set_option_code(name, value)?)
+    }
+
+    /// Like `set_option`, but an option this libmpv build does not have is
+    /// skipped (a bad value for one it has is still an error).
+    fn set_optional_option(&self, name: &str, value: &str) -> Result<(), PlayerError> {
+        match self.set_option_code(name, value)? {
+            sys::ERROR_OPTION_NOT_FOUND => Ok(()),
+            code => check(self.inner.api, code),
+        }
+    }
+
+    /// Sets an option; returns mpv's status code.
+    fn set_option_code(&self, name: &str, value: &str) -> Result<c_int, PlayerError> {
         let (name, value) = (cstring(name)?, cstring(value)?);
         let api = self.inner.api;
         // SAFETY: valid handle; both pointers are NUL-terminated and outlive the call.
-        check(api, unsafe {
-            (api.mpv_set_option_string)(self.inner.raw(), name.as_ptr(), value.as_ptr())
-        })
+        Ok(unsafe { (api.mpv_set_option_string)(self.inner.raw(), name.as_ptr(), value.as_ptr()) })
     }
 
     fn set_property(&self, name: &str, value: &str) -> Result<(), PlayerError> {
@@ -562,6 +581,20 @@ mod tests {
         require_mpv!();
         let result = Player::with_options(&[("definitely-not-an-option", "1")]);
         assert!(matches!(result, Err(PlayerError::Mpv(_))));
+    }
+
+    #[test]
+    fn optional_options_may_be_missing_but_not_wrong() {
+        require_mpv!();
+        let p = headless();
+        assert_eq!(
+            p.set_optional_option("definitely-not-an-option", "1"),
+            Ok(())
+        );
+        assert!(matches!(
+            p.set_optional_option("idle", "maybe"),
+            Err(PlayerError::Mpv(_))
+        ));
     }
 
     #[test]
