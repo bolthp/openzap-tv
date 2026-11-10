@@ -23,7 +23,8 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
       start, seek ±15 s / 1 / 3 / 10 min, previous/next programme, back to live.
 - [ ] `I` cycles: channel + programme → programme description → stream info → off.
 - [ ] Fullscreen-first navigation: channel list and group picker as overlays
-      over the video, fully usable from the keyboard (and a remote).
+      over the video, fully usable from the keyboard (and a remote or a
+      gamepad, see "Gamepads and Steam Deck").
 - [ ] Several playlists (providers) at once.
 - [ ] Parental control: PIN for chosen groups/channels.
 - [ ] Picture-in-picture (second player instance) — later.
@@ -65,6 +66,22 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
 - Public playlists for manual tests (no keys, many formats and odd names):
   <https://github.com/iptv-org/iptv/tree/master/streams>. Never commit
   downloaded copies; unit tests keep using synthetic `example.com` data.
+
+## Gamepads and Steam Deck
+
+- [ ] Run on the Steam Deck (SteamOS: x86_64 Linux, AMD GPU, 1280×800).
+      Desktop Mode should already work once libmpv is bundled (SteamOS has a
+      read-only system, so no `libmpv2` package): AppImage or, better there,
+      Flatpak. Game Mode: added as a non-Steam game, runs fullscreen under
+      gamescope. Check VAAPI hardware decoding on the Deck's GPU.
+- [ ] Gamepad control. Steam Input can already map the Deck's controls to
+      keys (D-pad → PageUp/PageDown, A → Enter, B → Esc), so a keyboard-only
+      UI is the first step (see "Fullscreen-first navigation"). Native support
+      later, e.g. with the `gilrs` crate (reads controllers without SDL):
+      D-pad moves through the list, A plays, B goes back, shoulder buttons
+      switch groups, triggers change volume.
+- [ ] "TV" layout for small screens / couch distance: larger text and rows,
+      focus highlight that is easy to see.
 
 ## Packaging
 
