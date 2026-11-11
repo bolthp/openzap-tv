@@ -354,8 +354,12 @@ impl Player {
         })
     }
 
-    /// Starts playing `url`, replacing whatever is playing.
+    /// Starts playing `url`, replacing whatever is playing. Audio and
+    /// subtitle choices made for the previous stream are dropped: mpv
+    /// would otherwise ask the new stream for the same track ids.
     pub fn load(&self, url: &str) -> Result<(), PlayerError> {
+        self.set_property("aid", "auto")?;
+        self.set_property("sid", "auto")?;
         self.command(&["loadfile", url, "replace"])
     }
 
@@ -411,8 +415,21 @@ impl Player {
 
     /// Switches to the audio track with mpv's track `id`
     /// (see [`crate::tracks::audio_tracks`]).
+    ///
+    /// mpv reads only the selected tracks. A live stream cannot be read
+    /// again from the playing position, so the new track would be heard
+    /// only once playback reaches what is read after the switch: a whole
+    /// network buffer of silence. Such streams are opened again instead,
+    /// with the new track (about as quick as switching channels).
     pub fn set_audio_track(&self, id: i64) -> Result<(), PlayerError> {
-        self.set_property("aid", &id.to_string())
+        self.set_property("aid", &id.to_string())?;
+        if self.get_property("seekable").as_deref() != Some("no") {
+            return Ok(());
+        }
+        match self.get_property("path") {
+            Some(path) => self.command(&["loadfile", &path, "replace"]),
+            None => Ok(()),
+        }
     }
 
     /// Shows the subtitle track with mpv's track `id`, or none
@@ -623,6 +640,63 @@ mod tests {
             }
         }
         assert!(failed, "expected a Failed event");
+    }
+
+    #[test]
+    fn loading_a_stream_drops_track_choices() {
+        require_mpv!();
+        let p = headless();
+        p.set_audio_track(2).unwrap();
+        p.set_subtitle_track(Some(3)).unwrap();
+        p.load("/nonexistent/openzap-test.mp4").unwrap();
+        assert_eq!(p.get_property("aid").as_deref(), Some("auto"));
+        assert_eq!(p.get_property("sid").as_deref(), Some("auto"));
+    }
+
+    /// Serves `connections` requests with an endless-looking WAV (no
+    /// length, like a live stream, so mpv cannot seek in it).
+    fn serve_live_wav(connections: usize) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/live.wav", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(connections) {
+                let Ok(mut stream) = stream else { continue };
+                let mut request = [0u8; 1024];
+                let _ = stream.read(&mut request);
+                // 8 kHz mono 8-bit PCM; sizes 0xFFFFFFFF mean "unknown".
+                let mut wav = b"HTTP/1.0 200 OK\r\nContent-Type: audio/wav\r\n\r\n".to_vec();
+                wav.extend_from_slice(b"RIFF\xff\xff\xff\xffWAVEfmt ");
+                wav.extend_from_slice(&16u32.to_le_bytes());
+                wav.extend_from_slice(&[1, 0, 1, 0]); // PCM, 1 channel
+                wav.extend_from_slice(&8000u32.to_le_bytes());
+                wav.extend_from_slice(&8000u32.to_le_bytes());
+                wav.extend_from_slice(&[1, 0, 8, 0]); // block align, bits
+                wav.extend_from_slice(b"data\xff\xff\xff\xff");
+                wav.resize(wav.len() + 8000 * 30, 128); // 30 s of silence
+                let _ = stream.write_all(&wav);
+            }
+        });
+        url
+    }
+
+    /// Waits for the next event that `want` accepts.
+    fn wait_for(p: &Player, want: impl Fn(&PlayerEvent) -> bool) -> bool {
+        (0..100).any(|_| p.wait(0.1).is_some_and(|ev| want(&ev)))
+    }
+
+    #[test]
+    fn audio_switch_reopens_a_live_stream() {
+        require_mpv!();
+        let p = headless();
+        p.load(&serve_live_wav(2)).unwrap();
+        assert!(wait_for(&p, |ev| *ev == PlayerEvent::Started));
+        assert_eq!(p.get_property("seekable").as_deref(), Some("no"));
+
+        p.set_audio_track(1).unwrap();
+        assert!(wait_for(&p, |ev| *ev == PlayerEvent::Loading), "reopened");
+        assert!(wait_for(&p, |ev| *ev == PlayerEvent::Started));
+        assert_eq!(p.get_property("aid").as_deref(), Some("1"));
     }
 
     #[test]

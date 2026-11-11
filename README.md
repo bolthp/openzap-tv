@@ -37,6 +37,10 @@ Download a file from the [Releases](../../releases) page.
   `flatpak install --user openzap-vX.Y.Z-x86_64.flatpak`, then start it from the
   application menu or with `flatpak run io.github.bolthp.OpenZap`. The runtime it
   needs comes from Flathub (added automatically if it is not set up yet).
+  The first install downloads that runtime and its graphics drivers (several
+  hundred MB, once; other Flatpak apps on the same runtime share it). If Flatpak
+  itself was just installed, log out and back in: until then the application
+  menu does not list Flatpak apps and the taskbar shows a generic icon.
 - **Linux, tar.gz:** unpack and run `./openzap`. libmpv must be installed:
   `sudo apt install libmpv2` (Debian/Ubuntu; `libmpv1` on older releases).
 
