@@ -40,6 +40,11 @@
     <control>pointing</control>
   </supports>
   <releases>
+    <release version="0.4.2" date="2026-11-11">
+      <description>
+        <p>Switching the audio track no longer leaves live channels silent; the next channel starts with its own default tracks.</p>
+      </description>
+    </release>
     <release version="0.4.1" date="2026-11-10">
       <description>
         <p>Clear the cache from the settings, the I key shows the whole programme description, picture size per channel.</p>
