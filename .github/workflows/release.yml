@@ -5,9 +5,17 @@ name: Release
 # Running it by hand (Actions -> Release -> Run workflow) builds the
 # archives as a dry run: they are kept as workflow artifacts, nothing is
 # published.
+#
+# A push to main that changes the Flatpak manifest (or this file) builds
+# only the Flatpak, to refresh its cache: tag runs cannot see each other's
+# caches, only main's. Path filters do not apply to tags.
 on:
   push:
     tags: ["v*"]
+    branches: [main]
+    paths:
+      - flatpak/io.github.bolthp.OpenZap.yml
+      - .github/workflows/release.yml
   workflow_dispatch:
 
 permissions:
@@ -19,6 +27,8 @@ env:
 jobs:
   build:
     name: Build (${{ matrix.target }})
+    # Not on main pushes: those only refresh the Flatpak cache.
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: true
@@ -109,12 +119,14 @@ jobs:
           path: flatpak
 
       # Builds libmpv and FFmpeg too; the cache keeps them between releases.
+      # Saved from main only, where every tag run can restore it.
       - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:
           manifest-path: flatpak/io.github.bolthp.OpenZap.yml
           bundle: openzap-${{ env.RELEASE_NAME }}-x86_64.flatpak
           cache-key: flatpak-${{ hashFiles('flatpak/io.github.bolthp.OpenZap.yml') }}
           upload-artifact: false
+          save-cache: ${{ github.ref_type != 'tag' }}
 
       - uses: actions/upload-artifact@v7
         with:
