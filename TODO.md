@@ -4,11 +4,12 @@ Backlog, roughly in priority order. Move items to a commit message when done.
 
 ## Playback
 
-- [ ] **Hardware decoding** is on by default (`auto-safe`, falls back to the
-      CPU). Verified: Windows + NVIDIA (nvdec, 4K HEVC). Still to check:
-      Windows Intel/AMD, Linux VAAPI/NVIDIA (VAAPI may need the X11/Wayland
-      display passed to mpv's renderer for zero-copy).
-- [ ] Check `PageUp` / `PageDown` channel switching on Windows (not tested yet).
+- [ ] **Hardware decoding** (on by default, `auto-safe`, falls back to the
+      CPU) works on Windows + NVIDIA (nvdec, also 4K HEVC). Not yet tried:
+      Windows with Intel/AMD graphics, Linux with VAAPI (Intel/AMD) or NVIDIA;
+      the Steam Deck covers AMD/VAAPI. On Linux, VAAPI may need the X11 or
+      Wayland display passed to mpv's renderer (not done yet) to decode
+      without copying frames.
 
 ## Inspired by OTT-Play
 
