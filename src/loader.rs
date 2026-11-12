@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::UNIX_EPOCH;
 
 use crate::cache;
+use crate::catchup;
 use crate::config::UpdatePolicy;
 use crate::epg::{self, ChannelFilter, Epg, EpgError, EpgFilter, normalize_name};
 use crate::m3u::{self, Playlist};
@@ -21,6 +22,9 @@ const MAX_EPG_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 /// running, and a few days ahead.
 const EPG_KEEP_PAST_SECS: i64 = 3 * 3600;
 const EPG_KEEP_FUTURE_SECS: i64 = 4 * 24 * 3600;
+/// With the archive on, past programmes are kept as far back as the
+/// archive goes, but not more than this (memory).
+pub const ARCHIVE_MAX_DAYS: u32 = 14;
 /// Downloaded data older than this is due for an update (except with
 /// [`UpdatePolicy::Never`]).
 pub const REFRESH_SECS: i64 = 24 * 3600;
@@ -50,6 +54,9 @@ pub struct Request {
     /// Guide channels to keep when the playlist is not (re)loaded; `None`
     /// keeps all.
     pub channels: Option<ChannelFilter>,
+    /// `None`: the archive is off. Else the archive depth (days) of the
+    /// playlist in use, for when the playlist is not (re)loaded.
+    pub archive_days: Option<u32>,
 }
 
 /// Loaded data and where it came from.
@@ -103,6 +110,7 @@ fn saved_copy_name(input: &str, kind: &str) -> Option<String> {
 fn load(req: &Request, cancel: &AtomicBool, mut send: impl FnMut(LoadEvent)) {
     let cancelled = || cancel.load(Ordering::Relaxed);
     let mut channels = req.channels.clone();
+    let mut archive_days = req.archive_days;
     if req.playlist_fetch != Fetch::Keep {
         let result = if req.playlist.trim().is_empty() {
             Err("no playlist source given".to_string())
@@ -112,6 +120,7 @@ fn load(req: &Request, cancel: &AtomicBool, mut send: impl FnMut(LoadEvent)) {
         };
         if let Ok(fetched) = &result {
             channels = Some(channel_filter(&fetched.data));
+            archive_days = archive_days.map(|_| catchup::max_days(&fetched.data));
         }
         if cancelled() {
             return;
@@ -126,7 +135,10 @@ fn load(req: &Request, cancel: &AtomicBool, mut send: impl FnMut(LoadEvent)) {
         return;
     }
     let filter = EpgFilter {
-        window: Some((req.now - EPG_KEEP_PAST_SECS, req.now + EPG_KEEP_FUTURE_SECS)),
+        window: Some((
+            req.now - keep_past_secs(archive_days),
+            req.now + EPG_KEEP_FUTURE_SECS,
+        )),
         channels,
     };
     let fetch = Fetching::new(req, &req.epg, "epg", req.epg_fetch);
@@ -139,6 +151,12 @@ fn load(req: &Request, cancel: &AtomicBool, mut send: impl FnMut(LoadEvent)) {
     if !cancelled() {
         send(LoadEvent::Epg(Some(result)));
     }
+}
+
+/// How much guide history to keep: enough for the archive, if it is on.
+fn keep_past_secs(archive_days: Option<u32>) -> i64 {
+    let days = archive_days.unwrap_or(0).min(ARCHIVE_MAX_DAYS);
+    EPG_KEEP_PAST_SECS.max(i64::from(days) * 24 * 3600)
 }
 
 /// Whether the saved copy (saved at `saved_at`) is used instead of a download.
@@ -432,6 +450,7 @@ mod tests {
             now: 0,
             cache_dir: None,
             channels: None,
+            archive_days: None,
         }
     }
 
@@ -524,6 +543,44 @@ mod tests {
         assert_eq!(epg.channels.len(), 1);
         let titles: Vec<_> = epg.programmes.iter().map(|p| p.title.as_str()).collect();
         assert_eq!(titles, ["Now"]);
+    }
+
+    #[test]
+    fn archive_keeps_guide_history_as_deep_as_the_playlist_archive() {
+        // 2024-02-29 12:00 UTC.
+        let now = 1_709_208_000;
+        let epg_xml = r#"<tv>
+            <channel id="a"><display-name>A</display-name></channel>
+            <programme start="20240229113000" stop="20240229123000" channel="a"><title>Now</title></programme>
+            <programme start="20240227120000" stop="20240227130000" channel="a"><title>Two days ago</title></programme>
+            <programme start="20240220120000" stop="20240220130000" channel="a"><title>Last week</title></programme>
+        </tv>"#;
+        let playlist = "#EXTM3U\n#EXTINF:-1 tvg-id=\"a\" catchup=\"shift\" catchup-days=\"3\",A\nhttp://example.com/a\n";
+        let titles = |req: &Request| -> Vec<String> {
+            let ev = events(req);
+            let epg = &epg_of(&ev).as_ref().unwrap().as_ref().unwrap().data;
+            epg.programmes.iter().map(|p| p.title.clone()).collect()
+        };
+        let mut req = request(&temp_file("r.m3u", playlist), &temp_file("r.xml", epg_xml));
+        req.now = now;
+        assert_eq!(titles(&req), ["Now"], "archive off");
+        req.archive_days = Some(0); // the depth comes from the loaded playlist
+        assert_eq!(titles(&req), ["Now", "Two days ago"]);
+        // Playlist not reloaded: the app's depth counts.
+        req.playlist_fetch = Fetch::Keep;
+        req.archive_days = Some(10);
+        assert_eq!(titles(&req), ["Now", "Two days ago", "Last week"]);
+    }
+
+    #[test]
+    fn archive_history_is_capped() {
+        assert_eq!(keep_past_secs(None), EPG_KEEP_PAST_SECS);
+        assert_eq!(keep_past_secs(Some(0)), EPG_KEEP_PAST_SECS);
+        assert_eq!(keep_past_secs(Some(2)), 2 * 24 * 3600);
+        assert_eq!(
+            keep_past_secs(Some(365)),
+            i64::from(ARCHIVE_MAX_DAYS) * 24 * 3600
+        );
     }
 
     #[test]

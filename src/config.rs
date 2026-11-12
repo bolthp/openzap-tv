@@ -142,6 +142,8 @@ pub struct Config {
     pub last_channel: Option<String>,
     /// Start playing `last_channel` when the app starts.
     pub resume_last: bool,
+    /// Offer the provider's archive (past programmes) in the guide.
+    pub archive: bool,
     pub playback: PlaybackSettings,
     pub view: ViewSettings,
     pub playlist_update: UpdatePolicy,
@@ -160,6 +162,7 @@ impl Default for Config {
             favorites: BTreeSet::new(),
             last_channel: None,
             resume_last: false,
+            archive: true,
             playback: PlaybackSettings::default(),
             view: ViewSettings::default(),
             // Playlists are small and their links may change; guides are
@@ -211,6 +214,11 @@ impl Config {
                 }
                 "last_channel" if !value.is_empty() => cfg.last_channel = Some(value.to_string()),
                 "resume_last" => cfg.resume_last = matches!(value, "yes" | "true" | "1"),
+                "archive" => {
+                    if let Some(v) = parse_bool(value) {
+                        cfg.archive = v;
+                    }
+                }
                 "hwdec" => {
                     // Unknown values keep the default.
                     match value {
@@ -292,6 +300,7 @@ impl Config {
         }
         out.push_str(&format!("volume={}\n", self.volume));
         out.push_str(&format!("resume_last={}\n", yes_no(self.resume_last)));
+        out.push_str(&format!("archive={}\n", yes_no(self.archive)));
         out.push_str(&format!("playlist_update={}\n", self.playlist_update.key()));
         out.push_str(&format!("epg_update={}\n", self.epg_update.key()));
         let hwdec = match self.playback.hwdec {
@@ -442,6 +451,7 @@ mod tests {
             favorites: ["news.example".to_string(), "Sport = One".to_string()].into(),
             last_channel: Some("news.example".into()),
             resume_last: true,
+            archive: false,
             playback: PlaybackSettings {
                 hwdec: HardwareDecoding::Auto,
                 buffer_secs: 25,
@@ -461,6 +471,13 @@ mod tests {
             .into(),
         };
         assert_eq!(Config::parse(&cfg.serialize()), cfg);
+    }
+
+    #[test]
+    fn archive_is_on_unless_turned_off() {
+        assert!(Config::default().archive);
+        assert!(Config::parse("archive=maybe").archive);
+        assert!(!Config::parse("archive=no").archive);
     }
 
     #[test]

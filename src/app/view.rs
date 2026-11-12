@@ -378,6 +378,22 @@ impl App {
             });
         });
 
+        if let Some(show) = self.archive_shown(idx) {
+            ui.horizontal(|ui| {
+                let day = clock::day_label(clock::local_day(show.start), clock::local_day(now));
+                let span = format!(
+                    "{day} {}–{}",
+                    clock::local_hm(show.start),
+                    clock::local_hm(show.stop)
+                );
+                ui.colored_label(colors.time, span);
+                ui.strong(&show.title);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.colored_label(colors.secondary, "Archive");
+                });
+            });
+            return;
+        }
         let nn = self.guide.now_next(&self.epg, idx, now);
         // Channels without a guide just show their name.
         let Some(p) = nn.now else {
@@ -475,6 +491,15 @@ impl App {
                 .clicked()
         {
             self.actions.push(Action::Restart);
+        }
+        if self.archive.is_some()
+            && self.playing.is_some()
+            && ui
+                .button("Live")
+                .on_hover_text("Back to the live stream")
+                .clicked()
+        {
+            self.actions.push(Action::BackToLive);
         }
         let mute_icon = if self.muted { "🔇" } else { "🔊" };
         if ui.button(mute_icon).on_hover_text("Mute (M)").clicked() {

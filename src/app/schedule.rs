@@ -8,7 +8,7 @@ use openzap::config::Side;
 use openzap::epg::Programme;
 
 use super::palette::palette;
-use super::{App, window_drag_background};
+use super::{Action, App, window_drag_background};
 
 const WIDTH: f32 = 400.0;
 const SLIDE_SECS: f32 = 0.18;
@@ -88,6 +88,7 @@ impl App {
         let scroll_now = std::mem::take(&mut self.schedule.scroll_to_now);
         let mut close = false;
         let mut clicked = None;
+        let mut watch = None;
         egui::Area::new(egui::Id::unique("schedule-area"))
             .order(egui::Order::Foreground)
             .fixed_pos(rect.min)
@@ -121,6 +122,8 @@ impl App {
                         }
                         ui.separator();
                         let list = self.guide.schedule(&self.epg, idx);
+                        let archive = self.archive_of(idx);
+                        let watching = self.archive_shown(idx).map(|a| a.start);
                         if list.is_empty() {
                             ui.colored_label(
                                 colors.secondary,
@@ -143,10 +146,17 @@ impl App {
                                             egui::RichText::new(label).strong().color(colors.time),
                                         );
                                     }
-                                    let open = expanded == Some(p.start);
-                                    let response = schedule_row(ui, p, now, open);
+                                    let row = Row {
+                                        open: expanded == Some(p.start),
+                                        in_archive: archive.is_some_and(|a| a.covers(p.start, now)),
+                                        watching: watching == Some(p.start),
+                                    };
+                                    let (response, watch_clicked) = schedule_row(ui, p, now, row);
                                     if response.clicked() {
                                         clicked = Some(p.start);
+                                    }
+                                    if watch_clicked {
+                                        watch = Some((idx, p.start));
                                     }
                                     if scroll_now && p.start <= now && now < p.stop {
                                         response.scroll_to_me(Some(egui::Align::Center));
@@ -161,17 +171,52 @@ impl App {
         if let Some(start) = clicked {
             self.schedule.toggle_expanded(start);
         }
+        if let Some((channel, start)) = watch {
+            self.actions.push(Action::PlayArchive { channel, start });
+        }
+    }
+}
+
+/// How a programme row is shown.
+#[derive(Debug, Clone, Copy, Default)]
+struct Row {
+    /// The description is shown.
+    open: bool,
+    /// It can be played from the archive.
+    in_archive: bool,
+    /// It is being played from the archive.
+    watching: bool,
+}
+
+/// Text of the archive button: past programmes are watched, the running
+/// one is started over.
+fn watch_label(p: &Programme, now: i64) -> &'static str {
+    if p.stop <= now {
+        "▶ Watch"
+    } else {
+        "▶ Watch from the start"
     }
 }
 
 /// One programme: start time and title; the current one is highlighted
-/// with its progress; a click shows the description.
-fn schedule_row(ui: &mut egui::Ui, p: &Programme, now: i64, expanded: bool) -> egui::Response {
+/// with its progress; a click shows the description (and, for programmes
+/// in the archive, a button to watch them). Returns the row's response and
+/// whether the watch button was clicked.
+fn schedule_row(ui: &mut egui::Ui, p: &Programme, now: i64, row: Row) -> (egui::Response, bool) {
     let colors = palette(ui.visuals());
     let past = p.stop <= now;
     let current = p.start <= now && now < p.stop;
-    let fade = |c: egui::Color32| if past { c.gamma_multiply(0.55) } else { c };
-    let fill = if current {
+    // Archived programmes stay readable: they can still be watched.
+    let fade = |c: egui::Color32| {
+        if past && !row.in_archive {
+            c.gamma_multiply(0.55)
+        } else {
+            c
+        }
+    };
+    let fill = if row.watching {
+        colors.time.gamma_multiply(0.25)
+    } else if current {
         ui.visuals().selection.bg_fill.gamma_multiply(0.35)
     } else {
         egui::Color32::TRANSPARENT
@@ -200,6 +245,16 @@ fn schedule_row(ui: &mut egui::Ui, p: &Programme, now: i64, expanded: bool) -> e
                     fade(colors.primary),
                 ),
             );
+            if row.in_archive {
+                job.append(
+                    "  ▶",
+                    0.0,
+                    egui::TextFormat::simple(
+                        egui::TextStyle::Small.resolve(ui.style()),
+                        colors.time.gamma_multiply(0.8),
+                    ),
+                );
+            }
             ui.label(job);
             if current {
                 let (line, _) = ui.allocate_exact_size(
@@ -212,7 +267,7 @@ fn schedule_row(ui: &mut egui::Ui, p: &Programme, now: i64, expanded: bool) -> e
                     .rect_filled(line, 1.5, colors.secondary.gamma_multiply(0.2));
                 ui.painter().rect_filled(done, 1.5, colors.time);
             }
-            if expanded {
+            if row.open {
                 let end = format!("{}–{}", clock::local_hm(p.start), clock::local_hm(p.stop));
                 let meta = match &p.category {
                     Some(c) => format!("{end} · {c}"),
@@ -226,8 +281,25 @@ fn schedule_row(ui: &mut egui::Ui, p: &Programme, now: i64, expanded: bool) -> e
             }
         });
     let id = ui.scope_id().with(("programme", p.start));
-    ui.interact(inner.response.rect, id, egui::Sense::click())
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
+    let mut response = ui
+        .interact(inner.response.rect, id, egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let mut watch = false;
+    if row.in_archive && !row.open {
+        response = response.on_hover_text("In the archive: click, then Watch");
+    }
+    // Outside the row's click area: that one is registered later and would
+    // take the button's clicks.
+    if row.open && row.in_archive {
+        ui.horizontal(|ui| {
+            ui.add_space(6.0);
+            watch = ui
+                .button(watch_label(p, now))
+                .on_hover_text("From the provider's archive")
+                .clicked();
+        });
+    }
+    (response, watch)
 }
 
 #[cfg(test)]
@@ -256,6 +328,20 @@ mod tests {
         view.follow(Some(2));
         assert_eq!(view.expanded, None);
         assert!(view.scroll_to_now);
+    }
+
+    #[test]
+    fn watch_button_names_what_happens() {
+        let p = Programme {
+            channel: "a".into(),
+            start: 100,
+            stop: 200,
+            title: "T".into(),
+            desc: None,
+            category: None,
+        };
+        assert_eq!(watch_label(&p, 150), "▶ Watch from the start");
+        assert_eq!(watch_label(&p, 200), "▶ Watch");
     }
 
     #[test]

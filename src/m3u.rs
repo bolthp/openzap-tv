@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use crate::catchup::{self, Catchup};
 use crate::mask::mask_url;
 
 /// A single playlist entry.
@@ -15,6 +16,8 @@ pub struct Channel {
     pub group_title: Option<String>,
     /// Channel number from `tvg-chno`, if the playlist assigns one.
     pub tvg_chno: Option<u32>,
+    /// Archive of past programmes, if the playlist offers one.
+    pub catchup: Option<Catchup>,
 }
 
 impl Channel {
@@ -66,29 +69,35 @@ pub fn parse(input: &str) -> Result<Playlist, ParseError> {
         .map(str::trim)
         .filter(|l| !l.is_empty());
 
-    if !lines.next().is_some_and(|l| l.starts_with("#EXTM3U")) {
+    let Some(header) = lines.next().and_then(|l| l.strip_prefix("#EXTM3U")) else {
         return Err(ParseError::MissingHeader);
+    };
+    // Archive attributes in the header apply to every channel.
+    let mut defaults = catchup::Attrs::default();
+    for (key, value) in parse_attrs(header) {
+        defaults.set(&key.to_ascii_lowercase(), value);
     }
 
     let mut channels = Vec::new();
-    let mut pending: Option<Channel> = None;
+    let mut pending: Option<(Channel, catchup::Attrs)> = None;
 
     for line in lines {
         if let Some(info) = line.strip_prefix("#EXTINF:") {
             pending = Some(parse_extinf(info));
         } else if let Some(group) = line.strip_prefix("#EXTGRP:") {
-            if let Some(ch) = pending.as_mut() {
+            if let Some((ch, _)) = pending.as_mut() {
                 ch.group_title
                     .get_or_insert_with(|| group.trim().to_string());
             }
         } else if line.starts_with('#') {
             // Other directives (#EXTVLCOPT, comments, ...) are ignored.
         } else {
-            let mut ch = pending.take().unwrap_or_default();
+            let (mut ch, attrs) = pending.take().unwrap_or_default();
             if ch.name.is_empty() {
                 ch.name = line.to_string();
             }
             ch.url = line.to_string();
+            ch.catchup = attrs.or(&defaults).resolve(line);
             channels.push(ch);
         }
     }
@@ -96,14 +105,19 @@ pub fn parse(input: &str) -> Result<Playlist, ParseError> {
 }
 
 /// Parses the part after `#EXTINF:` — `-1 tvg-id="x" group-title="y",Display Name`.
-fn parse_extinf(info: &str) -> Channel {
+/// The archive attributes are returned apart: they need the URL.
+fn parse_extinf(info: &str) -> (Channel, catchup::Attrs) {
     let (head, name) = split_at_name_comma(info);
     let mut ch = Channel {
         name: name.to_string(),
         ..Channel::default()
     };
+    let mut archive = catchup::Attrs::default();
     for (key, value) in parse_attrs(head) {
         let key = key.to_ascii_lowercase();
+        if archive.set(&key, value) {
+            continue;
+        }
         if key == "tvg-chno" {
             ch.tvg_chno = value.trim().parse().ok().filter(|&n| n > 0);
             continue;
@@ -117,7 +131,7 @@ fn parse_extinf(info: &str) -> Channel {
         };
         *slot = Some(value.to_string()).filter(|v| !v.is_empty());
     }
-    ch
+    (ch, archive)
 }
 
 /// Splits at the first comma that is not inside double quotes.
@@ -163,6 +177,32 @@ fn parse_attrs(s: &str) -> Vec<(&str, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_archive_with_header_defaults() {
+        let pl = parse(
+            "#EXTM3U url-tvg=\"http://example.com/epg.xml\" catchup=\"shift\" catchup-days=\"3\"\n\
+             #EXTINF:-1,A\nhttp://example.com/a\n\
+             #EXTINF:-1 tvg-rec=\"7\",B\nhttp://example.com/b\n\
+             #EXTINF:-1 catchup=\"flussonic\",C\nhttp://example.com/c/index.m3u8\n",
+        )
+        .unwrap();
+        let archive: Vec<_> = pl
+            .channels
+            .iter()
+            .map(|c| c.catchup.as_ref().map(|a| (a.mode, a.days)))
+            .collect();
+        assert_eq!(
+            archive,
+            [
+                Some((catchup::Mode::Shift, 3)),
+                Some((catchup::Mode::Shift, 7)),
+                Some((catchup::Mode::Flussonic, 3)),
+            ]
+        );
+        let plain = parse("#EXTM3U\n#EXTINF:-1,A\nhttp://example.com/a\n").unwrap();
+        assert_eq!(plain.channels[0].catchup, None);
+    }
 
     #[test]
     fn parses_channel_numbers() {

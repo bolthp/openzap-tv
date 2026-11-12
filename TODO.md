@@ -14,11 +14,11 @@ Backlog, roughly in priority order. Move items to a commit message when done.
 
 Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
 
-- [ ] **Archive (catch-up)**: play past programmes from the guide. Playlists
-      mark it with `tvg-rec="<days>"` or `catchup`/`catchup-days`/
-      `catchup-source`; URL schemes differ (flussonic `index-<start>-<dur>`,
-      `?utc=&lutc=` shift, `append`). Needs per-scheme URL building + tests.
-- [ ] Archive marks in the programme guide (once archive exists).
+- [ ] Archive: check with real providers (shift and Flussonic schemes are
+      only tested against synthetic URLs). Flussonic "watch from the start"
+      of a running programme asks for its full length; check the server's
+      answer. Xtream Codes (`/timeshift/<user>/<pass>/<min>/<Y-m-d:H-M>/<id>`)
+      is not supported yet: the server's time zone is unclear.
 - [ ] **Timeshift** on archive channels: pause live, jump to the programme
       start, seek ±15 s / 1 / 3 / 10 min, previous/next programme, back to live.
 - [ ] Fullscreen-first navigation: channel list and group picker as overlays

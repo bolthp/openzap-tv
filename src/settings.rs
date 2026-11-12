@@ -13,6 +13,7 @@ pub struct SettingsDraft {
     pub playlist: String,
     pub epg: String,
     pub resume_last: bool,
+    pub archive: bool,
     pub playback: PlaybackSettings,
     pub theme: Theme,
     pub playlist_update: UpdatePolicy,
@@ -35,6 +36,7 @@ impl SettingsDraft {
             playlist: playlist.to_string(),
             epg: epg.to_string(),
             resume_last: config.resume_last,
+            archive: config.archive,
             playback: config.playback,
             theme: config.view.theme,
             playlist_update: config.playlist_update,
@@ -132,6 +134,17 @@ pub fn show(ctx: &egui::Context, draft: &mut SettingsDraft) -> Option<Outcome> {
             });
         ui.small(
             "A larger buffer helps with unstable connections; switching channels may take longer.",
+        );
+
+        section(ui, "Archive");
+        ui.checkbox(
+            &mut draft.archive,
+            "Show past programmes the provider keeps",
+        );
+        ui.small(
+            "For playlists with an archive (catch-up). Recordings stay on the provider's \
+             server; nothing is saved on this computer. Off: the guide keeps only a few \
+             hours of the past, which uses less memory.",
         );
 
         section(ui, "Interface");

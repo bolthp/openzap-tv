@@ -15,6 +15,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use eframe::egui;
 use openzap::browse::{Filter, channel_numbers, filter_channels, find_number, groups};
+use openzap::catchup::Catchup;
 use openzap::config::{self, Config, Side, Theme};
 use openzap::debuglog::DebugLog;
 use openzap::epg::{Epg, EpgChannel, Programme};
@@ -24,7 +25,7 @@ use openzap::m3u::{Channel, Playlist};
 use openzap::platform;
 use openzap::player::{AspectMode, Player, PlayerEvent, PropertyKind, PropertyValue};
 use openzap::tracks::{self, Track};
-use openzap::{cache, clock};
+use openzap::{cache, catchup, clock};
 
 use crate::filepick::{self, Pick, PickState, PickTarget};
 use crate::settings::{self, Outcome, SettingsDraft};
@@ -88,6 +89,21 @@ enum Action {
     SetSubtitle(Option<i64>),
     OpenSettings,
     Reload,
+    /// Plays the programme of `channel` starting at `start` from the archive.
+    PlayArchive {
+        channel: usize,
+        start: i64,
+    },
+    /// From the archive back to the live stream.
+    BackToLive,
+}
+
+/// The archived programme being played.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ArchiveShow {
+    start: i64,
+    stop: i64,
+    title: String,
 }
 
 /// How often shown stream info is re-read from mpv (bitrate changes), seconds.
@@ -304,6 +320,10 @@ pub struct App {
     /// A file dialog opened from the settings, while open.
     file_pick: Option<Pick>,
     playing: Option<usize>,
+    /// Set while `playing` (or the stream last started) is from the archive.
+    archive: Option<ArchiveShow>,
+    /// The archive setting changed: the guide is loaded again for its history.
+    reload_epg: bool,
     status: String,
     volume: f64,
     // UI actions are recorded while drawing and applied afterwards.
@@ -444,6 +464,8 @@ impl App {
             notices,
             player: None,
             playing: None,
+            archive: None,
+            reload_epg: false,
             status: String::new(),
             volume: 80.0,
             pending_play: None,
@@ -516,6 +538,10 @@ impl App {
             // all guide channels are kept.
             channels: (!self.playlist.channels.is_empty())
                 .then(|| loader::channel_filter(&self.playlist)),
+            archive_days: self
+                .config
+                .archive
+                .then(|| catchup::max_days(&self.playlist)),
         };
         let (tx, rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
@@ -731,6 +757,10 @@ impl App {
         self.playlist_input = playlist;
         self.epg_input = epg;
         self.config.resume_last = draft.resume_last;
+        if draft.archive != self.config.archive {
+            self.config.archive = draft.archive;
+            self.reload_epg = true;
+        }
         self.config.playlist_update = draft.playlist_update;
         self.config.epg_update = draft.epg_update;
         if draft.theme != self.config.view.theme {
@@ -815,19 +845,76 @@ impl App {
         self.playing = None;
     }
 
+    /// Plays a channel live.
     fn play(&mut self, idx: usize) {
-        if !self.ensure_player() {
-            return;
-        }
         let Some(channel) = self.playlist.channels.get(idx) else {
             return;
         };
         self.dlog(&format!("play channel #{idx}: {}", channel.name));
+        let url = channel.url.clone();
+        if self.start_stream(idx, &url) {
+            self.archive = None;
+        }
+    }
+
+    /// The channel's archive, if it has one and the archive is turned on.
+    fn archive_of(&self, idx: usize) -> Option<&Catchup> {
+        let channel = self.playlist.channels.get(idx)?;
+        channel.catchup.as_ref().filter(|_| self.config.archive)
+    }
+
+    /// Plays the programme of channel `idx` starting at `start` from the archive.
+    fn play_archive(&mut self, idx: usize, start: i64, now: i64, time: f64) {
+        let Some(p) = self
+            .guide
+            .schedule(&self.epg, idx)
+            .into_iter()
+            .find(|p| p.start == start)
+        else {
+            return;
+        };
+        let show = ArchiveShow {
+            start: p.start,
+            stop: p.stop,
+            title: p.title.clone(),
+        };
+        let (Some(channel), Some(archive)) =
+            (self.playlist.channels.get(idx), self.archive_of(idx))
+        else {
+            return;
+        };
+        if !archive.covers(show.start, now) {
+            self.show_osd("Not in the archive", time);
+            return;
+        }
+        let Some(url) = archive.url(&channel.url, show.start, show.stop, now) else {
+            self.show_osd("No archive link for this channel", time);
+            return;
+        };
+        self.dlog(&format!(
+            "play archive of #{idx}: {} at {} ({:?})",
+            channel.name, show.start, archive.mode
+        ));
+        if self.start_stream(idx, &url) {
+            self.selected = Some(idx);
+            self.show_osd(format!("Archive: {}", show.title), time);
+            self.archive = Some(show);
+        }
+    }
+
+    /// Opens `url` as channel `idx`; false if it could not be started.
+    fn start_stream(&mut self, idx: usize, url: &str) -> bool {
+        if !self.ensure_player() {
+            return false;
+        }
+        let Some(channel) = self.playlist.channels.get(idx) else {
+            return false;
+        };
         let aspect = self.config.aspect_for(channel.key());
         if let Some(Err(e)) = self.player.as_ref().map(|p| p.set_aspect(aspect)) {
             self.dlog(&format!("cannot set picture size: {e}"));
         }
-        let result = self.player.as_ref().map(|p| p.load(&channel.url));
+        let result = self.player.as_ref().map(|p| p.load(url));
         match result {
             Some(Ok(())) => {
                 self.config.last_channel = Some(channel.key().to_string());
@@ -839,9 +926,13 @@ impl App {
                 self.current = Some(idx);
                 self.status = "Loading...".into();
                 self.apply_volume();
+                true
             }
-            Some(Err(e)) => self.status = format!("Cannot start playback: {e}"),
-            None => {}
+            Some(Err(e)) => {
+                self.status = format!("Cannot start playback: {e}");
+                false
+            }
+            None => false,
         }
     }
 
@@ -851,6 +942,7 @@ impl App {
             return;
         }
         self.playing = None;
+        self.archive = None;
         self.stream = StreamState::Idle;
         self.status = "Stopped".into();
     }
@@ -1255,11 +1347,24 @@ impl App {
         self.scroll_to = Some(idx);
     }
 
-    /// Plays the current (or last failed) channel again from scratch.
+    /// Plays the current (or last failed) channel again from scratch; an
+    /// archived programme from its start.
     fn restart(&mut self) {
-        if let Some(idx) = self.playing.or(self.current) {
-            self.pending_play = Some(idx);
+        let Some(idx) = self.playing.or(self.current) else {
+            return;
+        };
+        match &self.archive {
+            Some(show) => self.actions.push(Action::PlayArchive {
+                channel: idx,
+                start: show.start,
+            }),
+            None => self.pending_play = Some(idx),
         }
+    }
+
+    /// The archived programme on screen, if the channel shown is playing one.
+    fn archive_shown(&self, idx: usize) -> Option<&ArchiveShow> {
+        self.archive.as_ref().filter(|_| self.playing == Some(idx))
     }
 
     /// Applies the actions recorded while drawing.
@@ -1292,6 +1397,14 @@ impl App {
                     self.settings = Some(draft);
                 }
                 Action::Reload => self.start_load(ctx, Fetch::Download, Fetch::Download),
+                Action::PlayArchive { channel, start } => {
+                    self.play_archive(channel, start, unix_now(), time);
+                }
+                Action::BackToLive => {
+                    if let Some(idx) = self.playing.or(self.current) {
+                        self.pending_play = Some(idx);
+                    }
+                }
             }
         }
     }
@@ -1562,10 +1675,13 @@ impl eframe::App for App {
             && let Some(outcome) = settings::show(&ctx, draft)
         {
             let draft = self.settings.take();
-            if let (Outcome::Save, Some(draft)) = (outcome, draft)
-                && self.apply_settings(draft)
-            {
-                self.load_by_policy(&ctx);
+            if let (Outcome::Save, Some(draft)) = (outcome, draft) {
+                if self.apply_settings(draft) {
+                    self.load_by_policy(&ctx);
+                } else if std::mem::take(&mut self.reload_epg) && !self.epg_input.is_empty() {
+                    self.start_load(&ctx, Fetch::Keep, Fetch::Policy(self.config.epg_update));
+                }
+                self.reload_epg = false;
             }
         }
         if let Some(idx) = self.pending_play.take() {
@@ -1706,10 +1822,20 @@ pub fn demo_data(now: i64) -> (Playlist, Epg) {
     ];
     let mut playlist = Playlist::default();
     let mut epg = Epg::default();
+    // The news channel has a day of archive, to show how it looks.
+    let archive = catchup::Attrs {
+        mode: Some("shift".into()),
+        days: Some("1".into()),
+        source: None,
+    };
     for (name, id, group) in entries {
+        let url = format!("http://example.com/{id}.m3u8?token=fakekey");
         playlist.channels.push(Channel {
             name: name.into(),
-            url: format!("http://example.com/{id}.m3u8?token=fakekey"),
+            catchup: (id == "news.example")
+                .then(|| archive.resolve(&url))
+                .flatten(),
+            url,
             tvg_id: Some(id.into()),
             group_title: Some(group.into()),
             ..Channel::default()
@@ -2004,6 +2130,59 @@ mod tests {
             (Some(1), Some(0), Some(0))
         );
         assert_eq!(app.group.as_deref(), Some("Sports"), "group still exists");
+    }
+
+    #[test]
+    fn archive_is_offered_only_when_turned_on() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+        assert!(app.archive_of(0).is_some(), "demo news has an archive");
+        assert!(app.archive_of(1).is_none());
+        app.config.archive = false;
+        assert!(app.archive_of(0).is_none());
+    }
+
+    #[test]
+    fn restart_replays_the_archived_programme() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+        app.playing = Some(0);
+        app.restart();
+        assert_eq!(app.pending_play, Some(0), "live");
+
+        app.pending_play = None;
+        app.archive = Some(ArchiveShow {
+            start: -1800,
+            stop: 1800,
+            title: "Morning".into(),
+        });
+        app.restart();
+        assert_eq!(app.pending_play, None);
+        assert_eq!(
+            app.actions,
+            [Action::PlayArchive {
+                channel: 0,
+                start: -1800
+            }]
+        );
+        assert!(app.archive_shown(0).is_some());
+        assert!(app.archive_shown(1).is_none(), "another channel is shown");
+
+        app.stop();
+        assert_eq!(app.archive, None);
+    }
+
+    #[test]
+    fn turning_the_archive_off_reloads_only_the_guide() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+        let mut draft = SettingsDraft::new("", "", &app.config);
+        assert!(!app.apply_settings(draft.clone()));
+        assert!(!app.reload_epg, "nothing changed");
+        draft.archive = false;
+        assert!(!app.apply_settings(draft), "sources unchanged");
+        assert!(app.reload_epg);
+        assert!(!app.config.archive);
     }
 
     #[test]

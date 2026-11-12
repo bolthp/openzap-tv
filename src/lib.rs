@@ -2,6 +2,7 @@
 
 pub mod browse;
 pub mod cache;
+pub mod catchup;
 pub mod clock;
 pub mod config;
 pub mod debuglog;
