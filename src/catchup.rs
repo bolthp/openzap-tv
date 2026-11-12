@@ -89,12 +89,13 @@ impl Attrs {
                 "flussonic" | "flussonic-hls" | "flussonic-ts" | "fs" => Mode::Flussonic,
                 _ => return None,
             },
-            // Only a depth (e.g. `tvg-rec="7"`): guess from the URL.
+            // Only a depth (e.g. OTT-Play's `tvg-rec="7"`): OTT-Play then
+            // uses the shift scheme. Guessing Flussonic from `index.m3u8`
+            // is wrong for providers whose servers just send the live
+            // stream for an unknown path.
             None if days.is_some() => {
                 if source.is_some() {
                     Mode::Default
-                } else if looks_like_flussonic(url) {
-                    Mode::Flussonic
                 } else {
                     Mode::Shift
                 }
@@ -196,13 +197,6 @@ fn split_last_segment(url: &str) -> Option<(&str, &str, &str)> {
     let host_end = path.find("://").map_or(0, |i| i + 3);
     let slash = path[host_end..].rfind('/')? + host_end;
     Some((&path[..=slash], &path[slash + 1..], query))
-}
-
-/// Flussonic's usual stream names.
-fn looks_like_flussonic(url: &str) -> bool {
-    split_last_segment(url).is_some_and(|(_, last, _)| {
-        matches!(last, "mpegts" | "index.m3u8" | "video.m3u8" | "mono.m3u8")
-    })
 }
 
 fn flussonic_url(live: &str, start: i64, duration: i64) -> Option<String> {
@@ -398,12 +392,24 @@ mod tests {
     }
 
     #[test]
-    fn depth_alone_guesses_the_scheme() {
+    fn depth_alone_means_shift() {
         let rec = attrs(None, Some("7"), None);
-        let c = rec.resolve("http://example.com/ch/index.m3u8").unwrap();
-        assert_eq!((c.mode, c.days), (Mode::Flussonic, 7));
-        let c = rec.resolve("http://example.com/play/123.m3u8").unwrap();
-        assert_eq!(c.mode, Mode::Shift);
+        let c = rec
+            .resolve("http://example.com/iptv/fakekey/123/index.m3u8")
+            .unwrap();
+        assert_eq!((c.mode, c.days), (Mode::Shift, 7));
+        assert_eq!(
+            c.url(
+                "http://example.com/iptv/fakekey/123/index.m3u8",
+                START,
+                STOP,
+                NOW
+            )
+            .as_deref(),
+            Some(&*format!(
+                "http://example.com/iptv/fakekey/123/index.m3u8?utc={START}&lutc={NOW}"
+            ))
+        );
         let with_source = attrs(None, Some("7"), Some("http://example.com/{utc}"));
         assert_eq!(with_source.resolve("x").unwrap().mode, Mode::Default);
     }
@@ -461,7 +467,7 @@ mod tests {
         let pl = crate::m3u::parse(
             "#EXTM3U\n\
              #EXTINF:-1 catchup=\"shift\" catchup-days=\"3\",A\nhttp://example.com/a\n\
-             #EXTINF:-1 tvg-rec=\"7\",B\nhttp://example.com/b/index.m3u8\n\
+             #EXTINF:-1 catchup=\"flussonic\" tvg-rec=\"7\",B\nhttp://example.com/b/index.m3u8\n\
              #EXTINF:-1,C\nhttp://example.com/c\n",
         )
         .unwrap();
