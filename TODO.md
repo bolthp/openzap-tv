@@ -5,11 +5,12 @@ Backlog, roughly in priority order. Move items to a commit message when done.
 ## Playback
 
 - [ ] **Hardware decoding** (on by default, `auto-safe`, falls back to the
-      CPU) works on Windows + NVIDIA (nvdec, also 4K HEVC). Not yet tried:
-      Windows with Intel/AMD graphics, Linux with VAAPI (Intel/AMD) or NVIDIA;
-      the Steam Deck covers AMD/VAAPI. On Linux, VAAPI may need the X11 or
-      Wayland display passed to mpv's renderer (not done yet) to decode
-      without copying frames.
+      CPU) works on Windows + NVIDIA (nvdec, also 4K HDR HEVC 10-bit) and
+      Windows + AMD integrated graphics (Radeon 610M: `d3d11va-copy`, 4K HDR
+      at full frame rate). Not yet tried: Windows with Intel graphics, Linux
+      with VAAPI (Intel/AMD) or NVIDIA; the Steam Deck covers AMD/VAAPI. On
+      Linux, VAAPI may need the X11 or Wayland display passed to mpv's
+      renderer (not done yet) to decode without copying frames.
 
 ## Inspired by OTT-Play
 
