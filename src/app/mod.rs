@@ -18,6 +18,7 @@ use openzap::browse::{Filter, channel_numbers, filter_channels, find_number, gro
 use openzap::catchup::Catchup;
 use openzap::config::{self, Config, Side, Theme};
 use openzap::debuglog::DebugLog;
+use openzap::diagnose::{self, ErrorBurst};
 use openzap::epg::{Epg, EpgChannel, Programme};
 use openzap::guide::GuideIndex;
 use openzap::loader::{self, Fetch, Fetched, LoadEvent};
@@ -61,6 +62,8 @@ fn overlay_text(state: &StreamState) -> Option<String> {
 const VOLUME_STEP: f64 = 5.0;
 /// How long short on-screen messages (volume, mute) stay visible, seconds.
 const OSD_SECS: f64 = 1.5;
+/// Messages about a problem stay up longer than volume and the like.
+const AUDIO_OFF_OSD_SECS: f64 = 6.0;
 
 /// How long stream info stays up after a channel starts, seconds.
 const INFO_BRIEF_SECS: f64 = 6.0;
@@ -324,6 +327,14 @@ pub struct App {
     archive: Option<ArchiveShow>,
     /// The archive setting changed: the guide is loaded again for its history.
     reload_epg: bool,
+    /// Recent audio decoding errors of the current stream.
+    audio_errors: ErrorBurst,
+    /// Sound was turned off because it could not be decoded.
+    audio_disabled: bool,
+    /// The HTTP status of the last failed request of the current stream.
+    http_error: Option<u16>,
+    /// mpv's reason for the last failure, kept to add details arriving later.
+    failure: Option<String>,
     status: String,
     volume: f64,
     // UI actions are recorded while drawing and applied afterwards.
@@ -466,6 +477,10 @@ impl App {
             playing: None,
             archive: None,
             reload_epg: false,
+            audio_errors: ErrorBurst::default(),
+            audio_disabled: false,
+            http_error: None,
+            failure: None,
             status: String::new(),
             volume: 80.0,
             pending_play: None,
@@ -821,12 +836,13 @@ impl App {
             self.status = format!("Video output unavailable: {e}");
             return false;
         }
-        if self.log.is_some() {
-            if let Err(e) = player.request_log_messages("v") {
-                self.dlog(&format!("cannot get mpv log: {e}"));
-            }
-            self.dlog("player created, video attached");
+        // Warnings and errors are always read: they explain failures and
+        // reveal broken audio. The debug log gets everything.
+        let level = if self.log.is_some() { "v" } else { "warn" };
+        if let Err(e) = player.request_log_messages(level) {
+            self.dlog(&format!("cannot get mpv log: {e}"));
         }
+        self.dlog("player created, video attached");
         // Buffering state for the overlay; without it playback still works.
         for (name, kind) in [
             ("paused-for-cache", PropertyKind::Flag),
@@ -1031,6 +1047,10 @@ impl App {
                 self.tracks_refreshed_at = None;
                 self.stream = StreamState::Opening;
                 self.status = "Loading...".into();
+                self.audio_errors.clear();
+                self.audio_disabled = false;
+                self.http_error = None;
+                self.failure = None;
             }
             PlayerEvent::Started => {
                 self.info.stream_started();
@@ -1040,7 +1060,7 @@ impl App {
                 self.status = "Playing".into();
             }
             PlayerEvent::Property { name, value } => self.apply_property(&name, value),
-            PlayerEvent::Log { .. } => {} // only written to the debug log
+            PlayerEvent::Log { prefix, text, .. } => self.apply_log(&prefix, &text),
             // Also fired when a new channel replaces the old one, so `playing`
             // is left alone; it is cleared by `stop` and by failures.
             // A stream given up on is stopped; keep showing why.
@@ -1057,9 +1077,45 @@ impl App {
             }
             PlayerEvent::Failed(msg) => {
                 self.info.reset();
-                self.stream = StreamState::Failed(msg.clone());
                 self.playing = None;
-                self.status = format!("Playback failed: {msg}");
+                self.failure = Some(msg);
+                self.show_failure();
+            }
+        }
+    }
+
+    /// Shows the last failure with what is known about it.
+    fn show_failure(&mut self) {
+        let Some(msg) = &self.failure else {
+            return;
+        };
+        let text = diagnose::failure_text(msg, self.http_error, self.archive.is_some());
+        self.status = format!("Playback failed: {text}");
+        self.stream = StreamState::Failed(text);
+    }
+
+    /// Looks for known problems in mpv's log.
+    fn apply_log(&mut self, prefix: &str, text: &str) {
+        if let Some(code) = diagnose::http_status(prefix, text) {
+            self.http_error = Some(code);
+            // The log line may come after the failure itself.
+            if matches!(self.stream, StreamState::Failed(_)) {
+                self.show_failure();
+            }
+        }
+        if diagnose::is_audio_decode_error(prefix, text) && !self.audio_disabled {
+            let time = self.ctx.input(|i| i.time);
+            if self.audio_errors.record(time) {
+                self.audio_disabled = true;
+                self.dlog("audio cannot be decoded: playing without sound");
+                if let Some(Err(e)) = self.player.as_ref().map(Player::disable_audio) {
+                    self.dlog(&format!("cannot turn audio off: {e}"));
+                }
+                self.show_osd_for(
+                    "The sound of this channel cannot be decoded: playing without it",
+                    time,
+                    AUDIO_OFF_OSD_SECS,
+                );
             }
         }
     }
@@ -1425,7 +1481,11 @@ impl App {
     }
 
     fn show_osd(&mut self, text: impl Into<String>, time: f64) {
-        self.osd = Some((text.into(), time + OSD_SECS));
+        self.show_osd_for(text, time, OSD_SECS);
+    }
+
+    fn show_osd_for(&mut self, text: impl Into<String>, time: f64, secs: f64) {
+        self.osd = Some((text.into(), time + secs));
     }
 
     /// Windowed: docks or hides the list. Fullscreen: pins or unpins the
@@ -1899,6 +1959,68 @@ mod tests {
         app.apply_event(PlayerEvent::Failed("loading failed".into()));
         assert_eq!(app.status, "Playback failed: loading failed");
         assert_eq!(app.playing, None);
+    }
+
+    fn log(prefix: &str, text: &str) -> PlayerEvent {
+        PlayerEvent::Log {
+            prefix: prefix.into(),
+            level: "error".into(),
+            text: text.into(),
+        }
+    }
+
+    #[test]
+    fn archive_failure_names_the_archive_and_the_http_status() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+        app.playing = Some(0);
+        app.archive = Some(ArchiveShow {
+            start: -1800,
+            stop: 1800,
+            title: "Morning".into(),
+        });
+        app.apply_event(PlayerEvent::Loading);
+        app.apply_event(PlayerEvent::Failed("loading failed".into()));
+        assert!(
+            app.status.contains("archive did not answer"),
+            "{}",
+            app.status
+        );
+        // mpv logs the HTTP error after reporting the failure.
+        app.apply_event(log("curl", "HTTP error 502"));
+        let StreamState::Failed(text) = &app.stream else {
+            panic!("not failed: {:?}", app.stream);
+        };
+        assert!(
+            text.contains("HTTP 502") && text.contains("archive"),
+            "{text}"
+        );
+
+        // A new stream forgets it.
+        app.apply_event(PlayerEvent::Loading);
+        assert_eq!(app.http_error, None);
+        app.archive = None;
+        app.apply_event(PlayerEvent::Failed("loading failed".into()));
+        assert_eq!(app.status, "Playback failed: loading failed");
+    }
+
+    #[test]
+    fn broken_audio_is_turned_off_once() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+        app.apply_event(PlayerEvent::Loading);
+        for _ in 0..diagnose::AUDIO_ERROR_LIMIT - 1 {
+            app.apply_event(log("ad", "Error decoding audio."));
+        }
+        assert!(!app.audio_disabled, "a few errors are tolerated");
+        app.apply_event(log("ad", "Error decoding audio."));
+        assert!(app.audio_disabled);
+        assert!(app.osd.as_ref().is_some_and(|(t, _)| t.contains("sound")));
+        app.osd = None;
+        app.apply_event(log("ad", "Error decoding audio."));
+        assert!(app.osd.is_none(), "reported once");
+        app.apply_event(PlayerEvent::Loading);
+        assert!(!app.audio_disabled, "the next stream has sound again");
     }
 
     #[test]

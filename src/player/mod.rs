@@ -422,7 +422,17 @@ impl Player {
     /// network buffer of silence. Such streams are opened again instead,
     /// with the new track (about as quick as switching channels).
     pub fn set_audio_track(&self, id: i64) -> Result<(), PlayerError> {
-        self.set_property("aid", &id.to_string())?;
+        self.switch_audio(&id.to_string())
+    }
+
+    /// Plays on without sound (for audio that cannot be decoded, which
+    /// would otherwise hold the picture). The next `load` turns it on again.
+    pub fn disable_audio(&self) -> Result<(), PlayerError> {
+        self.switch_audio("no")
+    }
+
+    fn switch_audio(&self, aid: &str) -> Result<(), PlayerError> {
+        self.set_property("aid", aid)?;
         if self.get_property("seekable").as_deref() != Some("no") {
             return Ok(());
         }
