@@ -25,7 +25,17 @@ Desktop IPTV player for Windows, Linux and macOS: HLS/HTTP streams, M3U playlist
   icon), cached on disk for a week
 - Programme times in local time
 - Programme guide per channel: every programme by day, with descriptions
+- Archive (catch-up): watch past programmes from the guide on channels whose
+  provider keeps recordings (`catchup`, `tvg-rec`; shift, Flussonic and
+  template schemes)
+- Timeshift on those channels: pause, rewind and skip forward, jump to the
+  start of a programme or the next one, back to live
+- Time shift per channel for guides that run ahead of or behind the picture
+  (also `tvg-shift` from the playlist)
+- Channel numbers (`tvg-chno` or the position): type digits to switch
 - Stream info: resolution, codecs, frame rate, HDR, hardware/software decoding, bitrate
+- Channels whose sound cannot be decoded play on without it; failures name
+  the server's answer (e.g. HTTP 502)
 
 ## Install
 
