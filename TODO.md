@@ -9,6 +9,12 @@ Backlog, roughly in priority order. Move items to a commit message when done.
       Windows Intel/AMD, Linux VAAPI/NVIDIA (VAAPI may need the X11/Wayland
       display passed to mpv's renderer for zero-copy).
 - [ ] Check `PageUp` / `PageDown` channel switching on Windows (not tested yet).
+- [ ] A 4K HEVC channel with broken AAC audio ("Number of bands exceeds
+      limit", "Error decoding audio") freezes after the first frame, live and
+      archive alike. Check whether mpv waits for audio; maybe fall back to
+      video only or show a hint.
+- [ ] Archive errors from the provider (e.g. HTTP 502 for a channel that has
+      `tvg-rec`) only show "loading failed"; say that the archive did not answer.
 
 ## Inspired by OTT-Play
 
