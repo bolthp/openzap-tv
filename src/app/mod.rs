@@ -1428,12 +1428,13 @@ impl App {
 
     /// Shows subtitle track `id`, or none.
     fn select_subtitle(&mut self, id: Option<i64>, time: f64) {
-        if let Some(Err(e)) = self.player.as_ref().map(|p| p.set_subtitle_track(id)) {
-            self.status = format!("Cannot switch subtitles: {e}");
-            return;
-        }
-        for t in &mut self.subtitles {
-            t.selected = Some(t.id) == id;
+        let mut refused = false;
+        if let Some(player) = &self.player {
+            if let Err(e) = player.set_subtitle_track(id) {
+                self.status = format!("Cannot switch subtitles: {e}");
+                return;
+            }
+            refused = tracks::subtitle_refused(id, player.get_property("sid").as_deref());
         }
         let label = match id {
             None => "off".to_string(),
@@ -1443,7 +1444,15 @@ impl App {
                 .find(|t| t.id == id)
                 .map_or_else(|| format!("Track {id}"), |t| t.label()),
         };
-        self.show_osd(format!("Subtitles: {label}"), time);
+        for t in &mut self.subtitles {
+            t.selected = !refused && Some(t.id) == id;
+        }
+        if refused {
+            self.dlog(&format!("subtitles refused by mpv: {label}"));
+            self.show_osd(format!("Cannot show subtitles: {label}"), time);
+        } else {
+            self.show_osd(format!("Subtitles: {label}"), time);
+        }
     }
 
     /// Enters or leaves fullscreen. A fullscreen window is on top anyway;

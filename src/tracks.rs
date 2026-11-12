@@ -95,6 +95,13 @@ pub fn next_subtitle(tracks: &[Track]) -> Option<i64> {
     }
 }
 
+/// Whether mpv dropped the subtitle track just asked for (`requested`),
+/// given `sid` read back afterwards. mpv turns `sid` to "no" when it cannot
+/// decode the track, e.g. DVB teletext with an FFmpeg built without libzvbi.
+pub fn subtitle_refused(requested: Option<i64>, sid: Option<&str>) -> bool {
+    requested.is_some() && sid == Some("no")
+}
+
 /// Readable names for common language codes; others are shown as given.
 fn language_name(code: &str) -> String {
     let name = match code.to_ascii_lowercase().as_str() {
@@ -224,6 +231,15 @@ mod tests {
         off[1].selected = false;
         assert_eq!(next_subtitle(&off), Some(1));
         assert_eq!(next_subtitle(&[]), None);
+    }
+
+    #[test]
+    fn refused_subtitles_are_detected() {
+        assert!(subtitle_refused(Some(1), Some("no")));
+        assert!(!subtitle_refused(Some(1), Some("1")));
+        // Turning subtitles off, or no answer from mpv, is not a refusal.
+        assert!(!subtitle_refused(None, Some("no")));
+        assert!(!subtitle_refused(Some(1), None));
     }
 
     #[test]

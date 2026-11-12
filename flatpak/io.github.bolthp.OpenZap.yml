@@ -41,6 +41,25 @@ modules:
         tag: 0.17.5
         commit: 4a05d8127f525943ebf45fdc6497c9e665947f0d
 
+  # DVB teletext subtitles (FFmpeg's libzvbi_teletextdec). Not in
+  # io.mpv.Mpv; the Windows and distribution builds of FFmpeg have it.
+  - name: zvbi
+    config-opts:
+      - --disable-static
+      - --disable-examples
+      - --disable-tests
+      - --without-doxygen
+      - --without-x
+    cleanup:
+      - /bin
+      - /sbin
+      - /share/locale
+    sources:
+      - type: git
+        url: https://github.com/zapping-vbi/zvbi.git
+        tag: v0.2.46
+        commit: 34bb6f660c5c1bacd4a66cc7b22311e4ca3c1ab5
+
   - name: ffmpeg
     config-opts:
       - --disable-debug
@@ -53,6 +72,7 @@ modules:
       - --enable-gnutls
       - --enable-libass
       - --enable-libfreetype
+      - --enable-libzvbi
       - --enable-libdrm
       - --enable-vaapi
     cleanup:
