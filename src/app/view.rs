@@ -4,11 +4,12 @@
 use std::time::Duration;
 
 use eframe::egui;
-use openzap::browse::{format_duration, progress};
+use openzap::browse::format_duration;
 use openzap::clock;
 use openzap::config::Side;
 use openzap::player::AspectMode;
 use openzap::streaminfo::StreamInfo;
+use openzap::timeshift;
 
 use super::logo::paint_logo;
 use super::palette;
@@ -339,14 +340,21 @@ impl App {
     }
 
     /// Channel name and the programme guide for it.
-    fn bar_guide(&self, ui: &mut egui::Ui, now: i64) {
+    fn bar_guide(&mut self, ui: &mut egui::Ui, now: i64) {
+        if let Some(action) = self.bar_guide_inner(ui, now) {
+            self.actions.push(action);
+        }
+    }
+
+    /// Draws the guide part of the bar; returns a click on its timeline.
+    fn bar_guide_inner(&self, ui: &mut egui::Ui, now: i64) -> Option<Action> {
         let colors = palette::palette(ui.visuals());
         let current = self.guide_channel();
         let Some((idx, channel)) =
             current.and_then(|i| self.playlist.channels.get(i).map(|c| (i, c)))
         else {
             ui.label(egui::RichText::new("No channel").heading());
-            return;
+            return None;
         };
         ui.horizontal(|ui| {
             if self.show_logos {
@@ -382,27 +390,13 @@ impl App {
             });
         });
 
-        if let Some(show) = self.archive_shown(idx) {
-            ui.horizontal(|ui| {
-                let day = clock::day_label(clock::local_day(show.start), clock::local_day(now));
-                let span = format!(
-                    "{day} {}–{}",
-                    clock::local_hm(show.start),
-                    clock::local_hm(show.stop)
-                );
-                ui.colored_label(colors.time, span);
-                ui.strong(&show.title);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.colored_label(colors.secondary, "Archive");
-                });
-            });
-            return;
+        let timeshift = self.archive_of(idx).is_some() && self.playing == Some(idx);
+        if let Some(at) = self.archive_shown(idx) {
+            return self.bar_archive(ui, idx, at, now);
         }
         let nn = self.guide.now_next(&self.epg, idx, now);
         // Channels without a guide just show their name.
-        let Some(p) = nn.now else {
-            return;
-        };
+        let p = nn.now?;
         ui.horizontal(|ui| {
             let span = format!("{}–{}", clock::local_hm(p.start), clock::local_hm(p.stop));
             ui.colored_label(colors.time, span);
@@ -412,13 +406,8 @@ impl App {
                 ui.colored_label(colors.secondary, left);
             });
         });
-        let (line, _) =
-            ui.allocate_exact_size(egui::vec2(ui.available_width(), 4.0), egui::Sense::hover());
-        let painter = ui.painter();
-        painter.rect_filled(line, 2.0, egui::Color32::from_white_alpha(40));
-        let mut done = line;
-        done.set_width(line.width() * progress(p, now));
-        painter.rect_filled(done, 2.0, colors.time);
+        // On a channel with an archive, a click on the line goes back there.
+        let clicked = timeline(ui, p.start, p.stop, now, now, timeshift);
 
         if let Some(desc) = &p.desc {
             let mut job = egui::text::LayoutJob::single_section(
@@ -444,6 +433,42 @@ impl App {
                 ui.colored_label(colors.secondary.gamma_multiply(0.8), wait);
             });
         }
+        clicked.map(Action::SeekTo)
+    }
+
+    /// The bar while a channel plays from its archive: the programme at the
+    /// moment shown, where in it, and how far behind live.
+    fn bar_archive(&self, ui: &mut egui::Ui, idx: usize, at: i64, now: i64) -> Option<Action> {
+        let colors = palette::palette(ui.visuals());
+        let list = self.guide.schedule(&self.epg, idx);
+        let programme = timeshift::programme_at(&list, at);
+        let state = if self.paused.is_some() {
+            "Paused"
+        } else {
+            "Archive"
+        };
+        let behind = format!(
+            "{state} · {} · {} behind live",
+            clock::local_hms(at),
+            format_duration(now - at)
+        );
+        ui.horizontal(|ui| {
+            if let Some(p) = programme {
+                let day = clock::day_label(clock::local_day(p.start), clock::local_day(now));
+                let span = format!(
+                    "{day} {}–{}",
+                    clock::local_hm(p.start),
+                    clock::local_hm(p.stop)
+                );
+                ui.colored_label(colors.time, span);
+                ui.strong(&p.title);
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.colored_label(colors.secondary, behind);
+            });
+        });
+        let p = programme?;
+        timeline(ui, p.start, p.stop, at, now, true).map(Action::SeekTo)
     }
 
     fn bar_controls(&mut self, ui: &mut egui::Ui) {
@@ -496,15 +521,7 @@ impl App {
         {
             self.actions.push(Action::Restart);
         }
-        if self.archive.is_some()
-            && self.playing.is_some()
-            && ui
-                .button("Live")
-                .on_hover_text("Back to the live stream")
-                .clicked()
-        {
-            self.actions.push(Action::BackToLive);
-        }
+        self.timeshift_controls(ui);
         let mute_icon = if self.muted { "🔇" } else { "🔊" };
         if ui.button(mute_icon).on_hover_text("Mute (M)").clicked() {
             self.actions.push(Action::ToggleMute);
@@ -529,6 +546,55 @@ impl App {
             if ui.button(star).on_hover_text(hint).clicked() {
                 self.actions.push(Action::ToggleFavorite(idx));
             }
+        }
+    }
+
+    /// Pause and, on channels with an archive, moving through it.
+    fn timeshift_controls(&mut self, ui: &mut egui::Ui) {
+        let Some(idx) = self.playing else {
+            return;
+        };
+        let (icon, hint) = if self.paused.is_some() {
+            ("▶", "Resume (Space)")
+        } else {
+            ("⏸", "Pause (Space)")
+        };
+        if ui.button(icon).on_hover_text(hint).clicked() {
+            self.actions.push(Action::TogglePause);
+        }
+        if self.archive_of(idx).is_none() {
+            return;
+        }
+        let buttons = [
+            (
+                "⏮",
+                "Start of the programme; again: the one before (Home)",
+                Action::ProgrammeStart,
+            ),
+            (
+                "⏪",
+                "Back 15 s (←; Shift: 1 min, Ctrl: 10 min)",
+                Action::Seek(-15),
+            ),
+            (
+                "⏩",
+                "Forward 15 s (→; Shift: 1 min, Ctrl: 10 min)",
+                Action::Seek(15),
+            ),
+            ("⏭", "Next programme", Action::NextProgramme),
+        ];
+        for (icon, hint, action) in buttons {
+            if ui.button(icon).on_hover_text(hint).clicked() {
+                self.actions.push(action);
+            }
+        }
+        if self.archive.is_some()
+            && ui
+                .button("Live")
+                .on_hover_text("Back to the live stream (End)")
+                .clicked()
+        {
+            self.actions.push(Action::BackToLive);
         }
     }
 
@@ -638,6 +704,65 @@ impl App {
                 .on_hover_text("Audio track (A)");
         }
     }
+}
+
+/// A programme's progress line from `start` to `stop` with the moment
+/// shown at `at`. If `seekable`, a click returns the moment clicked (not
+/// after `now`) and hovering shows it.
+fn timeline(
+    ui: &mut egui::Ui,
+    start: i64,
+    stop: i64,
+    at: i64,
+    now: i64,
+    seekable: bool,
+) -> Option<i64> {
+    let colors = palette::palette(ui.visuals());
+    let sense = if seekable {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    // Taller than drawn, so it is easy to hit.
+    let (area, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 12.0), sense);
+    let line = egui::Rect::from_center_size(area.center(), egui::vec2(area.width(), 4.0));
+    let span = (stop - start).max(1) as f32;
+    let x_of = |t: i64| line.left() + line.width() * ((t - start) as f32 / span).clamp(0.0, 1.0);
+    let painter = ui.painter();
+    painter.rect_filled(line, 2.0, egui::Color32::from_white_alpha(40));
+    // What is already recorded (up to now) is a little brighter.
+    let mut recorded = line;
+    recorded.set_right(x_of(now));
+    if seekable {
+        painter.rect_filled(recorded, 2.0, egui::Color32::from_white_alpha(70));
+    }
+    let mut done = line;
+    done.set_right(x_of(at));
+    painter.rect_filled(done, 2.0, colors.time);
+    if !seekable {
+        return None;
+    }
+    painter.circle_filled(egui::pos2(x_of(at), line.center().y), 5.0, colors.time);
+    let moment = |x: f32| {
+        let share = ((x - line.left()) / line.width()).clamp(0.0, 1.0);
+        (start + (share * span) as i64).min(now)
+    };
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    if let Some(pos) = response.hover_pos() {
+        let t = moment(pos.x);
+        painter.vline(
+            x_of(t),
+            line.y_range().expand(4.0),
+            (1.0, egui::Color32::WHITE),
+        );
+        response
+            .clone()
+            .on_hover_text_at_pointer(clock::local_hm(t));
+    }
+    if response.clicked() {
+        return response.interact_pointer_pos().map(|p| moment(p.x));
+    }
+    None
 }
 
 #[cfg(test)]

@@ -9,24 +9,18 @@ Backlog, roughly in priority order. Move items to a commit message when done.
       Windows Intel/AMD, Linux VAAPI/NVIDIA (VAAPI may need the X11/Wayland
       display passed to mpv's renderer for zero-copy).
 - [ ] Check `PageUp` / `PageDown` channel switching on Windows (not tested yet).
-- [ ] A 4K HEVC channel with broken AAC audio ("Number of bands exceeds
-      limit", "Error decoding audio") freezes after the first frame, live and
-      archive alike. Check whether mpv waits for audio; maybe fall back to
-      video only or show a hint.
-- [ ] Archive errors from the provider (e.g. HTTP 502 for a channel that has
-      `tvg-rec`) only show "loading failed"; say that the archive did not answer.
 
 ## Inspired by OTT-Play
 
 Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
 
-- [ ] Archive: check with real providers (shift and Flussonic schemes are
-      only tested against synthetic URLs). Flussonic "watch from the start"
+- [ ] Archive: shift (`tvg-rec`) works with a real provider; timeshift is
+      only tested against a local server so far. Flussonic and templates are only tested against synthetic
+      URLs. Flussonic "watch from the start"
       of a running programme asks for its full length; check the server's
-      answer. Xtream Codes (`/timeshift/<user>/<pass>/<min>/<Y-m-d:H-M>/<id>`)
+      answer. Timeshift keys (Space, arrows, Home, End) not yet tried on
+      Windows. Xtream Codes (`/timeshift/<user>/<pass>/<min>/<Y-m-d:H-M>/<id>`)
       is not supported yet: the server's time zone is unclear.
-- [ ] **Timeshift** on archive channels: pause live, jump to the programme
-      start, seek ±15 s / 1 / 3 / 10 min, previous/next programme, back to live.
 - [ ] Fullscreen-first navigation: channel list and group picker as overlays
       over the video, fully usable from the keyboard (and a remote or a
       gamepad, see "Gamepads and Steam Deck").

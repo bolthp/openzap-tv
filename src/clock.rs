@@ -15,6 +15,12 @@ pub fn local_hm(unix: i64) -> String {
     format_hm(unix, utc_offset(unix))
 }
 
+/// "HH:MM:SS" in local time.
+pub fn local_hms(unix: i64) -> String {
+    let secs = (unix + utc_offset(unix)).rem_euclid(86_400);
+    format!("{}:{:02}", format_hm(unix, utc_offset(unix)), secs % 60)
+}
+
 /// Local calendar day of `unix` as days since 1970-01-01.
 pub fn local_day(unix: i64) -> i64 {
     (unix + utc_offset(unix)).div_euclid(86_400)

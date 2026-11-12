@@ -25,6 +25,7 @@ use openzap::loader::{self, Fetch, Fetched, LoadEvent};
 use openzap::m3u::{Channel, Playlist};
 use openzap::platform;
 use openzap::player::{AspectMode, Player, PlayerEvent, PropertyKind, PropertyValue};
+use openzap::timeshift::{self, Position, Target};
 use openzap::tracks::{self, Track};
 use openzap::{cache, catchup, clock};
 
@@ -73,6 +74,9 @@ const ON_TOP_UNAVAILABLE: &str = "Wayland: use the window menu (Alt+Space) for A
 /// How often the audio track list is re-read while the bar is up, seconds.
 const TRACKS_REFRESH_SECS: f64 = 1.0;
 
+/// Finds a programme boundary from a moment (see [`timeshift`]).
+type Find = fn(&[&Programme], i64) -> Option<i64>;
+
 /// A user command from a button or menu, applied after the frame is drawn
 /// (while drawing, `self` is borrowed by the UI code).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,21 +96,21 @@ enum Action {
     SetSubtitle(Option<i64>),
     OpenSettings,
     Reload,
-    /// Plays the programme of `channel` starting at `start` from the archive.
+    /// Plays `channel` from the archive at the moment `start` (Unix seconds).
     PlayArchive {
         channel: usize,
         start: i64,
     },
     /// From the archive back to the live stream.
     BackToLive,
-}
-
-/// The archived programme being played.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ArchiveShow {
-    start: i64,
-    stop: i64,
-    title: String,
+    /// Moves the channel playing by this many seconds (timeshift).
+    Seek(i64),
+    /// Moves the channel playing to this moment (Unix seconds).
+    SeekTo(i64),
+    /// To the start of the programme (or the one before, if it just began).
+    ProgrammeStart,
+    NextProgramme,
+    TogglePause,
 }
 
 /// How often shown stream info is re-read from mpv (bitrate changes), seconds.
@@ -324,7 +328,12 @@ pub struct App {
     file_pick: Option<Pick>,
     playing: Option<usize>,
     /// Set while `playing` (or the stream last started) is from the archive.
-    archive: Option<ArchiveShow>,
+    archive: Option<Position>,
+    /// The moment on screen (Unix seconds): updated every frame; "now" for
+    /// live streams.
+    shown_at: i64,
+    /// Paused: since when (input time) and at which moment.
+    paused: Option<(f64, i64)>,
     /// The archive setting changed: the guide is loaded again for its history.
     reload_epg: bool,
     /// Recent audio decoding errors of the current stream.
@@ -476,6 +485,8 @@ impl App {
             player: None,
             playing: None,
             archive: None,
+            shown_at: 0,
+            paused: None,
             reload_epg: false,
             audio_errors: ErrorBurst::default(),
             audio_disabled: false,
@@ -887,42 +898,138 @@ impl App {
         self.archive_of(idx).map(|a| format!("⏪ {}d", a.days))
     }
 
-    /// Plays the programme of channel `idx` starting at `start` from the archive.
-    fn play_archive(&mut self, idx: usize, start: i64, now: i64, time: f64) {
-        let Some(p) = self
-            .guide
-            .schedule(&self.epg, idx)
-            .into_iter()
-            .find(|p| p.start == start)
-        else {
-            return;
-        };
-        let show = ArchiveShow {
-            start: p.start,
-            stop: p.stop,
-            title: p.title.clone(),
-        };
+    /// Plays channel `idx` from the archive at the moment `at`.
+    fn play_archive(&mut self, idx: usize, at: i64, now: i64, time: f64) {
+        let list = self.guide.schedule(&self.epg, idx);
+        let programme = timeshift::programme_at(&list, at);
+        // Templates may want the programme's end; without a guide, now.
+        let stop = programme.map_or(now, |p| p.stop);
+        let title = programme.map(|p| p.title.clone());
         let (Some(channel), Some(archive)) =
             (self.playlist.channels.get(idx), self.archive_of(idx))
         else {
             return;
         };
-        if !archive.covers(show.start, now) {
+        if !archive.covers(at, now) {
             self.show_osd("Not in the archive", time);
             return;
         }
-        let Some(url) = archive.url(&channel.url, show.start, show.stop, now) else {
+        let Some(url) = archive.url(&channel.url, at, stop, now) else {
             self.show_osd("No archive link for this channel", time);
             return;
         };
         self.dlog(&format!(
-            "play archive of #{idx}: {} at {} ({:?})",
-            channel.name, show.start, archive.mode
+            "play archive of #{idx}: {} at {at} ({:?})",
+            channel.name, archive.mode
         ));
         if self.start_stream(idx, &url) {
             self.selected = Some(idx);
-            self.show_osd(format!("Archive: {}", show.title), time);
-            self.archive = Some(show);
+            self.archive = Some(Position::new(at));
+            self.shown_at = at;
+            let when = clock::local_hm(at);
+            let text = match title {
+                Some(t) => format!("Archive {when}: {t}"),
+                None => format!("Archive {when}"),
+            };
+            self.show_osd(text, time);
+        }
+    }
+
+    /// The moment on screen, read from the player for archive streams.
+    fn update_position(&mut self, now: i64) {
+        self.shown_at = match (self.paused, &mut self.archive) {
+            (Some((_, at)), _) => at,
+            (None, None) => now,
+            (None, Some(pos)) => {
+                let started = self.stream == StreamState::Playing && self.playing.is_some();
+                let time = self
+                    .player
+                    .as_ref()
+                    .filter(|_| started)
+                    .and_then(|p| p.get_property("playback-time"))
+                    .and_then(|t| t.parse::<f64>().ok());
+                if started {
+                    pos.at(time)
+                } else {
+                    // Opening or stopped: stay where it was.
+                    self.shown_at.max(pos.origin)
+                }
+            }
+        };
+    }
+
+    /// The channel playing (or last started) and its archive depth, for
+    /// timeshift; says so on screen if there is no archive.
+    fn timeshift_channel(&mut self, time: f64) -> Option<(usize, u32)> {
+        let idx = self.playing.or(self.current)?;
+        match self.archive_of(idx) {
+            Some(a) => Some((idx, a.days)),
+            None => {
+                self.show_osd("This channel has no archive", time);
+                None
+            }
+        }
+    }
+
+    /// Goes to a moment of the channel playing: live or the archive.
+    fn go_to(&mut self, wanted: i64, now: i64, time: f64) {
+        let Some((idx, days)) = self.timeshift_channel(time) else {
+            return;
+        };
+        match timeshift::target(wanted, now, days) {
+            Target::Live => {
+                if self.archive.is_some() || self.playing.is_none() || self.paused.is_some() {
+                    self.pending_play = Some(idx);
+                }
+                self.show_osd("Live", time);
+            }
+            Target::At(at) => self.play_archive(idx, at, now, time),
+        }
+    }
+
+    /// Jumps to a programme boundary found by `find` from the moment shown.
+    fn go_to_programme(&mut self, find: Find, now: i64, time: f64) {
+        let Some(idx) = self.playing.or(self.current) else {
+            return;
+        };
+        let list = self.guide.schedule(&self.epg, idx);
+        let found = find(&list, self.shown_at);
+        let empty = list.is_empty();
+        match found {
+            Some(at) => self.go_to(at, now, time),
+            None if empty => self.show_osd("No programme guide for this channel", time),
+            None => self.go_to(now, now, time),
+        }
+    }
+
+    /// Pauses, or resumes: after a long pause on a channel with an archive,
+    /// from the archive at the moment it was paused.
+    fn toggle_pause(&mut self, now: i64, time: f64) {
+        let Some(player) = self.player.as_ref().filter(|_| self.playing.is_some()) else {
+            return;
+        };
+        match self.paused {
+            None => {
+                if let Err(e) = player.set_pause(true) {
+                    self.status = format!("Cannot pause: {e}");
+                    return;
+                }
+                self.paused = Some((time, self.shown_at));
+                self.show_osd("Paused", time);
+            }
+            Some((since, at)) => {
+                let has_archive = self.playing.and_then(|i| self.archive_of(i)).is_some();
+                if has_archive && time - since > timeshift::LONG_PAUSE_SECS {
+                    self.go_to(at, now, time);
+                    return;
+                }
+                if let Err(e) = player.set_pause(false) {
+                    self.status = format!("Cannot resume: {e}");
+                    return;
+                }
+                self.paused = None;
+                self.show_osd("Playing", time);
+            }
         }
     }
 
@@ -938,7 +1045,12 @@ impl App {
         if let Some(Err(e)) = self.player.as_ref().map(|p| p.set_aspect(aspect)) {
             self.dlog(&format!("cannot set picture size: {e}"));
         }
-        let result = self.player.as_ref().map(|p| p.load(url));
+        let result = self.player.as_ref().map(|p| {
+            p.load(url)?;
+            // A pause would carry over to the new stream.
+            p.set_pause(false)
+        });
+        self.paused = None;
         match result {
             Some(Ok(())) => {
                 self.config.last_channel = Some(channel.key().to_string());
@@ -967,6 +1079,7 @@ impl App {
         }
         self.playing = None;
         self.archive = None;
+        self.paused = None;
         self.stream = StreamState::Idle;
         self.status = "Stopped".into();
     }
@@ -1068,6 +1181,7 @@ impl App {
             PlayerEvent::Ended => {
                 self.stream = StreamState::Idle;
                 self.status = "Stopped".into();
+                self.continue_archive();
             }
             PlayerEvent::Shutdown => {
                 // The next Play creates a fresh instance.
@@ -1082,6 +1196,20 @@ impl App {
                 self.show_failure();
             }
         }
+    }
+
+    /// An archive stream that ends (some schemes stop at the programme's
+    /// end) goes on from where it stopped, or live once it has caught up.
+    fn continue_archive(&mut self) {
+        let (Some(pos), Some(idx)) = (self.archive, self.playing) else {
+            return;
+        };
+        // Ended without playing anything: not worth trying again.
+        if self.shown_at < pos.origin + 10 {
+            return;
+        }
+        self.actions.push(Action::SeekTo(self.shown_at));
+        self.dlog(&format!("archive of #{idx} ended, going on"));
     }
 
     /// Shows the last failure with what is known about it.
@@ -1224,6 +1352,31 @@ impl App {
                     }
                 }
             }
+        }
+        if pressed(egui::Key::Space) {
+            self.actions.push(Action::TogglePause);
+        }
+        // Timeshift: 15 s, with Shift 1 min, with Ctrl 10 min.
+        let step = ctx.input(|i| {
+            if i.modifiers.command {
+                600
+            } else if i.modifiers.shift {
+                60
+            } else {
+                15
+            }
+        });
+        if pressed(egui::Key::ArrowLeft) {
+            self.actions.push(Action::Seek(-step));
+        }
+        if pressed(egui::Key::ArrowRight) {
+            self.actions.push(Action::Seek(step));
+        }
+        if pressed(egui::Key::Home) {
+            self.actions.push(Action::ProgrammeStart);
+        }
+        if pressed(egui::Key::End) {
+            self.actions.push(Action::BackToLive);
         }
         if pressed(egui::Key::PageUp) {
             self.switch_channel(-1);
@@ -1417,18 +1570,20 @@ impl App {
         let Some(idx) = self.playing.or(self.current) else {
             return;
         };
-        match &self.archive {
-            Some(show) => self.actions.push(Action::PlayArchive {
+        match self.archive {
+            Some(_) => self.actions.push(Action::PlayArchive {
                 channel: idx,
-                start: show.start,
+                start: self.shown_at,
             }),
             None => self.pending_play = Some(idx),
         }
     }
 
-    /// The archived programme on screen, if the channel shown is playing one.
-    fn archive_shown(&self, idx: usize) -> Option<&ArchiveShow> {
-        self.archive.as_ref().filter(|_| self.playing == Some(idx))
+    /// The moment shown from the archive, if channel `idx` is playing from it.
+    fn archive_shown(&self, idx: usize) -> Option<i64> {
+        self.archive
+            .filter(|_| self.playing == Some(idx))
+            .map(|_| self.shown_at)
     }
 
     /// Applies the actions recorded while drawing.
@@ -1464,6 +1619,15 @@ impl App {
                 Action::PlayArchive { channel, start } => {
                     self.play_archive(channel, start, unix_now(), time);
                 }
+                Action::Seek(delta) => self.go_to(self.shown_at + delta, unix_now(), time),
+                Action::SeekTo(at) => self.go_to(at, unix_now(), time),
+                Action::ProgrammeStart => {
+                    self.go_to_programme(timeshift::programme_start, unix_now(), time);
+                }
+                Action::NextProgramme => {
+                    self.go_to_programme(timeshift::next_programme, unix_now(), time);
+                }
+                Action::TogglePause => self.toggle_pause(unix_now(), time),
                 Action::BackToLive => {
                     if let Some(idx) = self.playing.or(self.current) {
                         self.pending_play = Some(idx);
@@ -1705,6 +1869,7 @@ impl eframe::App for App {
         self.poll_loading();
         self.check_updates(ui.ctx(), now);
         self.poll_player();
+        self.update_position(now);
         self.check_stall(ui.input(|i| i.time));
         self.handle_shortcuts(ui.ctx());
         self.update_digits(ui.ctx());
@@ -1974,11 +2139,7 @@ mod tests {
         let (playlist, epg) = demo_data(0);
         let mut app = App::new(playlist, epg, vec![]);
         app.playing = Some(0);
-        app.archive = Some(ArchiveShow {
-            start: -1800,
-            stop: 1800,
-            title: "Morning".into(),
-        });
+        app.archive = Some(Position::new(-1800));
         app.apply_event(PlayerEvent::Loading);
         app.apply_event(PlayerEvent::Failed("loading failed".into()));
         assert!(
@@ -2284,25 +2445,77 @@ mod tests {
         assert_eq!(app.pending_play, Some(0), "live");
 
         app.pending_play = None;
-        app.archive = Some(ArchiveShow {
-            start: -1800,
-            stop: 1800,
-            title: "Morning".into(),
-        });
+        app.archive = Some(Position::new(-1800));
+        app.shown_at = -1200; // played on for ten minutes
         app.restart();
         assert_eq!(app.pending_play, None);
         assert_eq!(
             app.actions,
             [Action::PlayArchive {
                 channel: 0,
-                start: -1800
-            }]
+                start: -1200
+            }],
+            "from where it is"
         );
-        assert!(app.archive_shown(0).is_some());
-        assert!(app.archive_shown(1).is_none(), "another channel is shown");
+        assert_eq!(app.archive_shown(0), Some(-1200));
+        assert_eq!(app.archive_shown(1), None, "another channel is shown");
 
         app.stop();
         assert_eq!(app.archive, None);
+    }
+
+    #[test]
+    fn timeshift_needs_an_archive_and_near_now_means_live() {
+        let now = 100_000;
+        let (playlist, epg) = demo_data(now);
+        let mut app = App::new(playlist, epg, vec![]);
+        // Channel 1 has no archive.
+        app.playing = Some(1);
+        app.go_to(now - 600, now, 0.0);
+        assert!(
+            app.osd
+                .as_ref()
+                .is_some_and(|(t, _)| t.contains("no archive"))
+        );
+        assert_eq!(app.pending_play, None);
+
+        // Channel 0 does; forward past now while in the archive: live.
+        app.playing = Some(0);
+        app.archive = Some(Position::new(now - 600));
+        app.go_to(now + 15, now, 0.0);
+        assert_eq!(app.pending_play, Some(0));
+    }
+
+    #[test]
+    fn position_stays_put_while_paused_or_opening() {
+        let now = 100_000;
+        let (playlist, epg) = demo_data(now);
+        let mut app = App::new(playlist, epg, vec![]);
+        app.update_position(now);
+        assert_eq!(app.shown_at, now, "live");
+        app.playing = Some(0);
+        app.archive = Some(Position::new(now - 600));
+        app.stream = StreamState::Opening;
+        app.update_position(now);
+        assert_eq!(app.shown_at, now, "opening: stays where it was");
+        app.paused = Some((1.0, now - 300));
+        app.update_position(now + 50);
+        assert_eq!(app.shown_at, now - 300);
+    }
+
+    #[test]
+    fn an_ended_archive_stream_goes_on() {
+        let now = 100_000;
+        let (playlist, epg) = demo_data(now);
+        let mut app = App::new(playlist, epg, vec![]);
+        app.playing = Some(0);
+        app.archive = Some(Position::new(now - 3600));
+        app.shown_at = now - 3600 + 5;
+        app.apply_event(PlayerEvent::Ended);
+        assert!(app.actions.is_empty(), "nothing played: no retry loop");
+        app.shown_at = now - 1800;
+        app.apply_event(PlayerEvent::Ended);
+        assert_eq!(app.actions, [Action::SeekTo(now - 1800)]);
     }
 
     #[test]

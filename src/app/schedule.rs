@@ -123,7 +123,7 @@ impl App {
                         ui.separator();
                         let list = self.guide.schedule(&self.epg, idx);
                         let archive = self.archive_of(idx);
-                        let watching = self.archive_shown(idx).map(|a| a.start);
+                        let watching = self.archive_shown(idx);
                         if list.is_empty() {
                             ui.colored_label(
                                 colors.secondary,
@@ -149,7 +149,8 @@ impl App {
                                     let row = Row {
                                         open: expanded == Some(p.start),
                                         in_archive: archive.is_some_and(|a| a.covers(p.start, now)),
-                                        watching: watching == Some(p.start),
+                                        watching: watching
+                                            .is_some_and(|at| p.start <= at && at < p.stop),
                                     };
                                     let (response, watch_clicked) = schedule_row(ui, p, now, row);
                                     if response.clicked() {

@@ -425,6 +425,11 @@ impl Player {
         self.switch_audio(&id.to_string())
     }
 
+    /// Pauses or resumes playback.
+    pub fn set_pause(&self, paused: bool) -> Result<(), PlayerError> {
+        self.set_property("pause", if paused { "yes" } else { "no" })
+    }
+
     /// Plays on without sound (for audio that cannot be decoded, which
     /// would otherwise hold the picture). The next `load` turns it on again.
     pub fn disable_audio(&self) -> Result<(), PlayerError> {

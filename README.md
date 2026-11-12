@@ -101,6 +101,10 @@ folder; choose files elsewhere with **Browse…**.
 | `T` | always on top |
 | `R` | restart the stream (also after "no picture for 20 s") |
 | `G` | programme guide of the channel (`Esc` closes it) |
+| `Space` | pause / resume |
+| `←` / `→` | archive channels: back / forward 15 s (`Shift`: 1 min, `Ctrl`: 10 min) |
+| `Home` | archive channels: start of the programme (again: the one before) |
+| `End` | back to live |
 | `I` | info: the programme in full (whole description, next) → stream info (resolution, codecs, HDR, decoder, bitrate) → off |
 
 Moving the mouse over the video brings up the bar with the programme guide
@@ -112,6 +116,14 @@ In fullscreen, moving the mouse to the window edge where the list belongs
 slides it in over the video; it slides away when the mouse leaves it, unless
 pinned with `L` or the list button.
 In a window, drag the video (or any empty spot) to move the window.
+
+Channels with an archive (catch-up) show `⏪` and its depth in days in the
+list. In the guide (`G`), click a past programme and then **Watch**. While a
+channel plays, the arrow keys, `Home`, the bar's buttons or a click on the
+programme's progress line move through the archive; `End` or **Live** goes
+back. A long pause on such a channel continues from the archive where it was
+paused. The recordings stay on the provider's server; the archive can be
+turned off in the settings.
 
 ## Known issues
 
