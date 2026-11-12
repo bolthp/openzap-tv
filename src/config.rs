@@ -127,6 +127,9 @@ fn parse_bool(v: &str) -> Option<bool> {
     }
 }
 
+/// Largest guide time shift for a channel, minutes.
+pub const MAX_SHIFT_MIN: i64 = 24 * 60;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     /// Playlist path or URL used last time.
@@ -151,6 +154,8 @@ pub struct Config {
     /// Picture size chosen for a channel (by `Channel::key`); channels not
     /// listed use `AspectMode::Auto`.
     pub channel_aspect: BTreeMap<String, AspectMode>,
+    /// Guide time shift chosen for a channel (by `Channel::key`), minutes.
+    pub channel_shift: BTreeMap<String, i64>,
 }
 
 impl Default for Config {
@@ -170,6 +175,7 @@ impl Default for Config {
             playlist_update: UpdatePolicy::OnStart,
             epg_update: UpdatePolicy::Daily,
             channel_aspect: BTreeMap::new(),
+            channel_shift: BTreeMap::new(),
         }
     }
 }
@@ -260,6 +266,18 @@ impl Config {
                         cfg.set_aspect_for(key.trim(), mode);
                     }
                 }
+                // "<minutes> <channel key>", like `channel_aspect`.
+                "channel_shift" => {
+                    if let Some((minutes, key)) = value.split_once(' ')
+                        && let Ok(minutes) = minutes.parse::<i64>()
+                        && !key.trim().is_empty()
+                    {
+                        cfg.channel_shift.insert(
+                            key.trim().to_string(),
+                            minutes.clamp(-MAX_SHIFT_MIN, MAX_SHIFT_MIN),
+                        );
+                    }
+                }
                 "theme" => {
                     if let Some(&t) = Theme::ALL.iter().find(|t| t.key() == value) {
                         cfg.view.theme = t;
@@ -328,6 +346,9 @@ impl Config {
         }
         for key in &self.favorites {
             out.push_str(&format!("favorite={}\n", one_line(key)));
+        }
+        for (key, minutes) in &self.channel_shift {
+            out.push_str(&format!("channel_shift={minutes} {}\n", one_line(key)));
         }
         for (key, mode) in &self.channel_aspect {
             out.push_str(&format!(
@@ -469,6 +490,7 @@ mod tests {
                 ("Sport = One HD".to_string(), AspectMode::Ratio4x3),
             ]
             .into(),
+            channel_shift: [("Sport = One HD".to_string(), -65)].into(),
         };
         assert_eq!(Config::parse(&cfg.serialize()), cfg);
     }

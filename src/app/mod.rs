@@ -111,6 +111,11 @@ enum Action {
     ProgrammeStart,
     NextProgramme,
     TogglePause,
+    /// Sets the guide time shift of `channel` (minutes).
+    SetShift {
+        channel: usize,
+        minutes: i64,
+    },
 }
 
 /// How often shown stream info is re-read from mpv (bitrate changes), seconds.
@@ -712,6 +717,10 @@ impl App {
 
     fn rebuild_guide(&mut self) {
         self.guide = GuideIndex::build(&self.playlist, &self.epg);
+        let shifts: Vec<i64> = (0..self.playlist.channels.len())
+            .map(|i| self.shift_minutes(i) * 60)
+            .collect();
+        self.guide.apply_shifts(&mut self.epg, &shifts);
         self.show_logos = has_logos(&self.guide, self.playlist.channels.len());
     }
 
@@ -885,6 +894,37 @@ impl App {
         if self.start_stream(idx, &url) {
             self.archive = None;
         }
+    }
+
+    /// Guide time shift of the channel in minutes: the user's choice, else
+    /// the playlist's `tvg-shift`.
+    fn shift_minutes(&self, idx: usize) -> i64 {
+        let Some(channel) = self.playlist.channels.get(idx) else {
+            return 0;
+        };
+        self.config
+            .channel_shift
+            .get(channel.key())
+            .copied()
+            .unwrap_or_else(|| channel.tvg_shift.unwrap_or(0) / 60)
+    }
+
+    /// Remembers the guide time shift for a channel and moves its guide.
+    fn set_shift(&mut self, idx: usize, minutes: i64) {
+        let Some(channel) = self.playlist.channels.get(idx) else {
+            return;
+        };
+        let key = channel.key().to_string();
+        let minutes = minutes.clamp(-config::MAX_SHIFT_MIN, config::MAX_SHIFT_MIN);
+        self.dlog(&format!("time shift of #{idx}: {minutes} min"));
+        // The playlist's own value needs no entry.
+        if minutes == channel.tvg_shift.unwrap_or(0) / 60 {
+            self.config.channel_shift.remove(&key);
+        } else {
+            self.config.channel_shift.insert(key, minutes);
+        }
+        self.pending_save = true;
+        self.rebuild_guide();
     }
 
     /// The channel's archive, if it has one and the archive is turned on.
@@ -1628,6 +1668,7 @@ impl App {
                     self.go_to_programme(timeshift::next_programme, unix_now(), time);
                 }
                 Action::TogglePause => self.toggle_pause(unix_now(), time),
+                Action::SetShift { channel, minutes } => self.set_shift(channel, minutes),
                 Action::BackToLive => {
                     if let Some(idx) = self.playing.or(self.current) {
                         self.pending_play = Some(idx);
@@ -2529,6 +2570,25 @@ mod tests {
         assert!(!app.apply_settings(draft), "sources unchanged");
         assert!(app.reload_epg);
         assert!(!app.config.archive);
+    }
+
+    #[test]
+    fn time_shift_moves_the_guide_and_is_remembered() {
+        let now = 100_000;
+        let (playlist, epg) = demo_data(now);
+        let mut app = App::new(playlist, epg, vec![]);
+        let first = |app: &App| app.guide.schedule(&app.epg, 0)[0].start;
+        let before = first(&app);
+        app.set_shift(0, 60);
+        assert_eq!(first(&app), before + 3600);
+        assert_eq!(app.config.channel_shift.get("news.example"), Some(&60));
+        assert!(app.pending_save);
+        app.set_shift(0, 0);
+        assert_eq!(first(&app), before);
+        assert!(
+            app.config.channel_shift.is_empty(),
+            "no shift is not stored"
+        );
     }
 
     #[test]

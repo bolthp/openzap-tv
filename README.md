@@ -125,6 +125,12 @@ back. A long pause on such a channel continues from the archive where it was
 paused. The recordings stay on the provider's server; the archive can be
 turned off in the settings.
 
+If a channel's guide is ahead of or behind the picture, set **Time shift** at
+the top of its guide panel (`−`/`+` move 5 min; drag or type for more). It
+moves the programme times of that channel, and where the archive starts them,
+and is remembered per channel. A `tvg-shift` (hours) in the playlist is used
+as the starting value.
+
 ## Known issues
 
 - **Wayland (the default on Ubuntu):** an application can neither keep its own

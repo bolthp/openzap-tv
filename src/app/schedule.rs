@@ -9,6 +9,7 @@ use openzap::epg::Programme;
 
 use super::palette::palette;
 use super::{Action, App, window_drag_background};
+use openzap::config::MAX_SHIFT_MIN;
 
 const WIDTH: f32 = 400.0;
 const SLIDE_SECS: f32 = 0.18;
@@ -23,6 +24,8 @@ pub(super) struct ScheduleView {
     scroll_to_now: bool,
     /// Where the panel was drawn last frame, if it is out.
     rect: Option<egui::Rect>,
+    /// Time shift being dragged (minutes), applied when the drag ends.
+    shift_draft: Option<i64>,
 }
 
 impl ScheduleView {
@@ -46,6 +49,7 @@ impl ScheduleView {
             self.channel = channel;
             self.expanded = None;
             self.scroll_to_now = true;
+            self.shift_draft = None;
         }
     }
 
@@ -89,6 +93,8 @@ impl App {
         let mut close = false;
         let mut clicked = None;
         let mut watch = None;
+        let mut new_shift = None;
+        let mut shift_draft = self.schedule.shift_draft;
         egui::Area::new(egui::Id::unique("schedule-area"))
             .order(egui::Order::Foreground)
             .fixed_pos(rect.min)
@@ -120,6 +126,7 @@ impl App {
                         if let Some(c) = self.playlist.channels.get(idx) {
                             ui.label(egui::RichText::new(&c.name).strong().color(colors.primary));
                         }
+                        new_shift = shift_control(ui, self.shift_minutes(idx), &mut shift_draft);
                         ui.separator();
                         let list = self.guide.schedule(&self.epg, idx);
                         let archive = self.archive_of(idx);
@@ -175,7 +182,70 @@ impl App {
         if let Some((channel, start)) = watch {
             self.actions.push(Action::PlayArchive { channel, start });
         }
+        self.schedule.shift_draft = shift_draft;
+        if let (Some(minutes), Some(channel)) = (new_shift, channel) {
+            self.actions.push(Action::SetShift { channel, minutes });
+        }
     }
+}
+
+/// Step of the − and + buttons of the time shift, minutes.
+const SHIFT_STEP_MIN: i64 = 5;
+
+/// "Time shift: +60 min" for the channel's guide. Dragging changes a
+/// draft; the new value is returned once the drag ends or a value is typed.
+fn shift_control(ui: &mut egui::Ui, current: i64, draft: &mut Option<i64>) -> Option<i64> {
+    let colors = palette(ui.visuals());
+    let mut minutes = draft.unwrap_or(current);
+    let mut done = None;
+    ui.horizontal(|ui| {
+        ui.colored_label(colors.secondary, "Time shift");
+        if ui
+            .small_button("−")
+            .on_hover_text(format!("{SHIFT_STEP_MIN} min earlier"))
+            .clicked()
+        {
+            done = Some(current - SHIFT_STEP_MIN);
+        }
+        let response = ui
+            .add(
+                egui::DragValue::new(&mut minutes)
+                    .range(-MAX_SHIFT_MIN..=MAX_SHIFT_MIN)
+                    .speed(0.5)
+                    .suffix(" min")
+                    .custom_formatter(|n, _| format!("{n:+.0}")),
+            )
+            .on_hover_text(
+                "Moves this channel's programme times (and where the archive \
+                 starts them). Use it when the guide is ahead of or behind \
+                 the picture: − and + move 5 min, or drag, or double-click \
+                 and type minutes.",
+            );
+        if ui
+            .small_button("+")
+            .on_hover_text(format!("{SHIFT_STEP_MIN} min later"))
+            .clicked()
+        {
+            done = Some(current + SHIFT_STEP_MIN);
+        }
+        if response.changed() {
+            *draft = Some(minutes);
+        }
+        let finished = response.drag_stopped() || (response.changed() && !response.dragged());
+        if current != 0
+            && ui
+                .small_button("Reset")
+                .on_hover_text("Programme times as the guide has them")
+                .clicked()
+        {
+            *draft = None;
+            done = Some(0);
+        } else if finished && done.is_none() {
+            *draft = None;
+            done = Some(minutes).filter(|&m| m != current);
+        }
+    });
+    done
 }
 
 /// How a programme row is shown.

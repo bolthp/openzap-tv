@@ -15,6 +15,10 @@ pub struct NowNext<'a> {
     pub next: Option<&'a Programme>,
 }
 
+/// Marks the ids of shifted copies (see [`GuideIndex::apply_shifts`]); no
+/// XMLTV id contains it.
+const SHIFT_MARK: char = '\u{1}';
+
 /// If programmes overlap, only this many earlier entries are checked for
 /// one that is still running.
 const LOOKBACK: usize = 16;
@@ -95,6 +99,44 @@ impl GuideIndex {
             epg_ids,
             logos,
             by_channel,
+        }
+    }
+
+    /// Moves the guide of playlist channels by `shifts[idx]` seconds. The
+    /// programmes are copied (moved) under a separate id, so other channels
+    /// using the same EPG channel keep theirs. Copies from an earlier call
+    /// are dropped first; they always sit at the end of `epg.programmes`,
+    /// so the indices of the originals stay valid.
+    pub fn apply_shifts(&mut self, epg: &mut Epg, shifts: &[i64]) {
+        epg.programmes.retain(|p| !p.channel.contains(SHIFT_MARK));
+        self.by_channel.retain(|id, _| !id.contains(SHIFT_MARK));
+        for id in self.epg_ids.iter_mut().flatten() {
+            if let Some((base, _)) = id.split_once(SHIFT_MARK) {
+                *id = base.to_string();
+            }
+        }
+        for (idx, &shift) in shifts.iter().enumerate() {
+            let Some(base) = self.epg_ids.get(idx).cloned().flatten() else {
+                continue;
+            };
+            if shift == 0 {
+                continue;
+            }
+            let id = format!("{base}{SHIFT_MARK}{shift}");
+            if !self.by_channel.contains_key(&id) {
+                let originals = self.by_channel.get(&base).cloned().unwrap_or_default();
+                let mut list = Vec::with_capacity(originals.len());
+                for i in originals {
+                    let mut p = epg.programmes[i].clone();
+                    p.channel = id.clone();
+                    p.start += shift;
+                    p.stop += shift;
+                    list.push(epg.programmes.len());
+                    epg.programmes.push(p);
+                }
+                self.by_channel.insert(id.clone(), list);
+            }
+            self.epg_ids[idx] = Some(id);
         }
     }
 
@@ -191,6 +233,54 @@ mod tests {
             desc: None,
             category: None,
         }
+    }
+
+    #[test]
+    fn shifted_channels_get_moved_copies() {
+        let epg_base = Epg {
+            channels: vec![epg_channel("x", "X")],
+            programmes: vec![prog("x", 0, 100, "A"), prog("x", 100, 200, "B")],
+        };
+        let playlist = Playlist {
+            channels: vec![
+                Channel {
+                    name: "X".into(),
+                    ..Channel::default()
+                },
+                Channel {
+                    name: "X copy".into(),
+                    tvg_name: Some("X".into()),
+                    ..Channel::default()
+                },
+            ],
+        };
+        let mut epg = Epg {
+            channels: epg_base.channels.clone(),
+            programmes: epg_base.programmes.clone(),
+        };
+        let mut index = GuideIndex::build(&playlist, &epg);
+        index.apply_shifts(&mut epg, &[3600, 0]);
+        let starts = |index: &GuideIndex, epg: &Epg, i| -> Vec<i64> {
+            index.schedule(epg, i).iter().map(|p| p.start).collect()
+        };
+        assert_eq!(starts(&index, &epg, 0), [3600, 3700]);
+        assert_eq!(
+            starts(&index, &epg, 1),
+            [0, 100],
+            "the other channel keeps its times"
+        );
+        assert_eq!(
+            index.now_next(&epg, 0, 3650).now.map(|p| p.title.as_str()),
+            Some("A")
+        );
+
+        // Applying again replaces the copies instead of adding more.
+        index.apply_shifts(&mut epg, &[-60, 0]);
+        assert_eq!(starts(&index, &epg, 0), [-60, 40]);
+        assert_eq!(epg.programmes.len(), 4);
+        index.apply_shifts(&mut epg, &[0, 0]);
+        assert_eq!(starts(&index, &epg, 0), [0, 100]);
+        assert_eq!(epg.programmes, epg_base.programmes);
     }
 
     fn channel(name: &str, tvg_id: Option<&str>) -> Channel {

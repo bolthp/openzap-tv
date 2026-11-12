@@ -18,6 +18,9 @@ pub struct Channel {
     pub tvg_chno: Option<u32>,
     /// Archive of past programmes, if the playlist offers one.
     pub catchup: Option<Catchup>,
+    /// `tvg-shift`: how far the guide's times are moved for this channel,
+    /// in seconds (the playlist gives hours).
+    pub tvg_shift: Option<i64>,
 }
 
 impl Channel {
@@ -74,8 +77,13 @@ pub fn parse(input: &str) -> Result<Playlist, ParseError> {
     };
     // Archive attributes in the header apply to every channel.
     let mut defaults = catchup::Attrs::default();
+    let mut default_shift = None;
     for (key, value) in parse_attrs(header) {
-        defaults.set(&key.to_ascii_lowercase(), value);
+        let key = key.to_ascii_lowercase();
+        if key == "tvg-shift" {
+            default_shift = parse_shift(value);
+        }
+        defaults.set(&key, value);
     }
 
     let mut channels = Vec::new();
@@ -98,6 +106,7 @@ pub fn parse(input: &str) -> Result<Playlist, ParseError> {
             }
             ch.url = line.to_string();
             ch.catchup = attrs.or(&defaults).resolve(line);
+            ch.tvg_shift = ch.tvg_shift.or(default_shift);
             channels.push(ch);
         }
     }
@@ -118,6 +127,10 @@ fn parse_extinf(info: &str) -> (Channel, catchup::Attrs) {
         if archive.set(&key, value) {
             continue;
         }
+        if key == "tvg-shift" {
+            ch.tvg_shift = parse_shift(value);
+            continue;
+        }
         if key == "tvg-chno" {
             ch.tvg_chno = value.trim().parse().ok().filter(|&n| n > 0);
             continue;
@@ -132,6 +145,13 @@ fn parse_extinf(info: &str) -> (Channel, catchup::Attrs) {
         *slot = Some(value.to_string()).filter(|v| !v.is_empty());
     }
     (ch, archive)
+}
+
+/// `tvg-shift` hours ("-1", "+2", "1.5") as seconds; 0 and nonsense give `None`.
+fn parse_shift(value: &str) -> Option<i64> {
+    let hours: f64 = value.trim().trim_start_matches('+').parse().ok()?;
+    let secs = (hours * 3600.0).round();
+    (hours.is_finite() && hours.abs() <= 24.0 && secs != 0.0).then_some(secs as i64)
 }
 
 /// Splits at the first comma that is not inside double quotes.
@@ -202,6 +222,21 @@ mod tests {
         );
         let plain = parse("#EXTM3U\n#EXTINF:-1,A\nhttp://example.com/a\n").unwrap();
         assert_eq!(plain.channels[0].catchup, None);
+    }
+
+    #[test]
+    fn parses_tvg_shift_in_hours() {
+        let pl = parse(
+            "#EXTM3U tvg-shift=\"-1\"\n\
+             #EXTINF:-1,A\nhttp://example.com/a\n\
+             #EXTINF:-1 tvg-shift=\"+1.5\",B\nhttp://example.com/b\n\
+             #EXTINF:-1 tvg-shift=\"x\",C\nhttp://example.com/c\n",
+        )
+        .unwrap();
+        let shifts: Vec<_> = pl.channels.iter().map(|c| c.tvg_shift).collect();
+        assert_eq!(shifts, [Some(-3600), Some(5400), Some(-3600)]);
+        assert_eq!(parse_shift("0"), None);
+        assert_eq!(parse_shift("99"), None);
     }
 
     #[test]
