@@ -82,4 +82,11 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
 - [ ] Publish on Flathub (needs a submission and review; the manifest already
       builds offline).
 - [ ] Maybe an AppImage as well (no runtime download).
+- [ ] Windows installer (MSI) next to the zip: Start menu entry, uninstall
+      from Settings → Apps, and a newer MSI replaces the old one in place
+      (fixed `UpgradeCode`). `cargo-wix` (WiX toolset) builds it on the
+      Windows CI runner; keep libmpv-2.dll beside the exe. Settings stay in
+      %APPDATA% and survive upgrades. Later: a winget manifest, so
+      `winget upgrade` updates it; code signing would stop SmartScreen
+      warnings but costs money.
 - [ ] macOS build, once someone can test it.
