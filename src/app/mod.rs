@@ -717,10 +717,7 @@ impl App {
 
     fn rebuild_guide(&mut self) {
         self.guide = GuideIndex::build(&self.playlist, &self.epg);
-        let shifts: Vec<i64> = (0..self.playlist.channels.len())
-            .map(|i| self.shift_minutes(i) * 60)
-            .collect();
-        self.guide.apply_shifts(&mut self.epg, &shifts);
+        self.apply_shifts();
         self.show_logos = has_logos(&self.guide, self.playlist.channels.len());
     }
 
@@ -896,6 +893,15 @@ impl App {
         }
     }
 
+    /// Moves the guide of channels with a time shift (cheap: only their
+    /// programmes are copied, the index is not rebuilt).
+    fn apply_shifts(&mut self) {
+        let shifts: Vec<i64> = (0..self.playlist.channels.len())
+            .map(|i| self.shift_minutes(i) * 60)
+            .collect();
+        self.guide.apply_shifts(&mut self.epg, &shifts);
+    }
+
     /// Guide time shift of the channel in minutes: the user's choice, else
     /// the playlist's `tvg-shift`.
     fn shift_minutes(&self, idx: usize) -> i64 {
@@ -924,7 +930,7 @@ impl App {
             self.config.channel_shift.insert(key, minutes);
         }
         self.pending_save = true;
-        self.rebuild_guide();
+        self.apply_shifts();
     }
 
     /// The channel's archive, if it has one and the archive is turned on.
