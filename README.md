@@ -41,18 +41,45 @@ Desktop IPTV player for Windows, Linux and macOS: HLS/HTTP streams, M3U playlist
 
 Download a file from the [Releases](../../releases) page.
 
-- **Windows:** unpack the zip and run `openzap.exe`. `libmpv-2.dll` is included.
-  The executable is not code-signed, so Windows SmartScreen may warn on first start.
-- **Linux, Flatpak** (any distribution, Steam Deck; libmpv included):
-  `flatpak install --user openzap-vX.Y.Z-x86_64.flatpak`, then start it from the
-  application menu or with `flatpak run io.github.bolthp.OpenZap`. The runtime it
-  needs comes from Flathub (added automatically if it is not set up yet).
-  The first install downloads that runtime and its graphics drivers (several
-  hundred MB, once; other Flatpak apps on the same runtime share it). If Flatpak
-  itself was just installed, log out and back in: until then the application
-  menu does not list Flatpak apps and the taskbar shows a generic icon.
-- **Linux, tar.gz:** unpack and run `./openzap`. libmpv must be installed:
-  `sudo apt install libmpv2` (Debian/Ubuntu; `libmpv1` on older releases).
+### Windows
+
+Unpack the zip and run `openzap.exe` (`libmpv-2.dll` is included).
+The executable is not code-signed, so Windows SmartScreen may warn on first start
+(**More info → Run anyway**).
+
+### Linux: Flatpak
+
+Works on any distribution and on the Steam Deck; libmpv is included.
+
+```sh
+flatpak install --user openzap-vX.Y.Z-x86_64.flatpak
+flatpak run io.github.bolthp.OpenZap
+```
+
+After installing, OpenZap is also in the application menu. The runtime it
+needs comes from Flathub (added automatically if it is not set up yet).
+
+- The first install downloads that runtime and its graphics drivers (several
+  hundred MB, once; other Flatpak apps on the same runtime share it).
+- If Flatpak itself was just installed, log out and back in: until then the
+  application menu does not list Flatpak apps and the taskbar shows a generic icon.
+
+To remove it:
+
+```sh
+flatpak uninstall --user io.github.bolthp.OpenZap
+```
+
+### Linux: tar.gz
+
+libmpv must be installed:
+
+```sh
+sudo apt install libmpv2      # Debian/Ubuntu (libmpv1 on older releases)
+tar xzf openzap-vX.Y.Z-linux-x86_64.tar.gz
+cd openzap-vX.Y.Z-linux-x86_64
+./openzap
+```
 
 OpenZap looks for libmpv next to the executable first, then in the system.
 
