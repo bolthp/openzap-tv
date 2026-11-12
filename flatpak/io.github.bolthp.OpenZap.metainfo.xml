@@ -40,6 +40,11 @@
     <control>pointing</control>
   </supports>
   <releases>
+    <release version="0.5.1" date="2026-11-12">
+      <description>
+        <p>Everything works from the keyboard, also in fullscreen: the arrow keys and Enter move through the channel list, the groups and the programme guide.</p>
+      </description>
+    </release>
     <release version="0.5.0" date="2026-11-12">
       <description>
         <p>Archive (catch-up) and timeshift: watch past programmes from the guide, pause, rewind and go back to live on channels whose provider keeps an archive. A time shift per channel for guides that run ahead or behind.</p>
