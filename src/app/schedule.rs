@@ -8,7 +8,7 @@ use openzap::config::Side;
 use openzap::epg::Programme;
 
 use super::palette::palette;
-use super::{Action, App, window_drag_background};
+use super::{Action, App, Focus, window_drag_background};
 use openzap::config::MAX_SHIFT_MIN;
 
 const WIDTH: f32 = 400.0;
@@ -26,6 +26,10 @@ pub(super) struct ScheduleView {
     rect: Option<egui::Rect>,
     /// Time shift being dragged (minutes), applied when the drag ends.
     shift_draft: Option<i64>,
+    /// Programme picked with the keyboard (its start time).
+    cursor: Option<i64>,
+    /// Scroll the keyboard's programme into view on the next frame.
+    scroll_to_cursor: bool,
 }
 
 impl ScheduleView {
@@ -50,7 +54,43 @@ impl ScheduleView {
             self.expanded = None;
             self.scroll_to_now = true;
             self.shift_draft = None;
+            self.cursor = None;
         }
+    }
+
+    /// ↑/↓: moves the keyboard's programme; it starts at the one on air.
+    pub(super) fn move_cursor(&mut self, list: &[&Programme], now: i64, delta: isize) {
+        if list.is_empty() {
+            return;
+        }
+        let pos = match self
+            .cursor
+            .and_then(|c| list.iter().position(|p| p.start == c))
+        {
+            Some(p) => p.saturating_add_signed(delta).min(list.len() - 1),
+            None => on_air(list, now),
+        };
+        self.cursor = Some(list[pos].start);
+        self.scroll_to_cursor = true;
+    }
+
+    /// Enter: opens the keyboard's programme; on an open programme from the
+    /// archive, returns its start to watch it.
+    pub(super) fn activate(
+        &mut self,
+        list: &[&Programme],
+        now: i64,
+        in_archive: impl Fn(i64) -> bool,
+    ) -> Option<i64> {
+        let Some(start) = self.cursor else {
+            self.move_cursor(list, now, 0);
+            return None;
+        };
+        if self.expanded == Some(start) && in_archive(start) {
+            return Some(start);
+        }
+        self.toggle_expanded(start);
+        None
     }
 
     fn toggle_expanded(&mut self, start: i64) {
@@ -89,6 +129,9 @@ impl App {
         self.schedule.rect = Some(rect);
 
         let expanded = self.schedule.expanded;
+        let keyboard = self.focus == Focus::Guide;
+        let cursor = self.schedule.cursor;
+        let scroll_cursor = std::mem::take(&mut self.schedule.scroll_to_cursor);
         let scroll_now = std::mem::take(&mut self.schedule.scroll_to_now);
         let mut close = false;
         let mut clicked = None;
@@ -154,6 +197,7 @@ impl App {
                                         );
                                     }
                                     let row = Row {
+                                        cursor: keyboard && cursor == Some(p.start),
                                         open: expanded == Some(p.start),
                                         in_archive: archive.is_some_and(|a| a.covers(p.start, now)),
                                         watching: watching
@@ -169,6 +213,9 @@ impl App {
                                     if scroll_now && p.start <= now && now < p.stop {
                                         response.scroll_to_me(Some(egui::Align::Center));
                                     }
+                                    if scroll_cursor && row.cursor {
+                                        response.scroll_to_me(None);
+                                    }
                                 }
                             });
                     });
@@ -178,6 +225,8 @@ impl App {
         }
         if let Some(start) = clicked {
             self.schedule.toggle_expanded(start);
+            self.schedule.cursor = Some(start);
+            self.focus = Focus::Guide;
         }
         if let Some((channel, start)) = watch {
             self.actions.push(Action::PlayArchive { channel, start });
@@ -187,6 +236,13 @@ impl App {
             self.actions.push(Action::SetShift { channel, minutes });
         }
     }
+}
+
+/// Position of the programme on air at `now` (else the next one, else the last).
+fn on_air(list: &[&Programme], now: i64) -> usize {
+    list.iter()
+        .position(|p| now < p.stop)
+        .unwrap_or(list.len() - 1)
 }
 
 /// Step of the − and + buttons of the time shift, minutes.
@@ -251,6 +307,8 @@ fn shift_control(ui: &mut egui::Ui, current: i64, draft: &mut Option<i64>) -> Op
 /// How a programme row is shown.
 #[derive(Debug, Clone, Copy, Default)]
 struct Row {
+    /// The keyboard is on it.
+    cursor: bool,
     /// The description is shown.
     open: bool,
     /// It can be played from the archive.
@@ -292,8 +350,14 @@ fn schedule_row(ui: &mut egui::Ui, p: &Programme, now: i64, row: Row) -> (egui::
     } else {
         egui::Color32::TRANSPARENT
     };
+    let stroke = if row.cursor {
+        egui::Stroke::new(1.5, colors.time)
+    } else {
+        egui::Stroke::NONE
+    };
     let inner = egui::Frame::new()
         .fill(fill)
+        .stroke(stroke)
         .corner_radius(4.0)
         .inner_margin(egui::vec2(6.0, 4.0))
         .show(ui, |ui| {

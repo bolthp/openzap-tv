@@ -14,7 +14,7 @@ use openzap::timeshift;
 use super::logo::paint_logo;
 use super::palette;
 use super::{
-    Action, App, InfoMode, StreamState, VOLUME_STEP, drag_window, draw_label, overlay_text,
+    Action, App, Focus, InfoMode, StreamState, VOLUME_STEP, drag_window, draw_label, overlay_text,
 };
 
 /// How long the bar stays after the mouse stops moving, seconds.
@@ -124,6 +124,9 @@ impl App {
         let moved = ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO);
         if pointer_over && moved || response.clicked() {
             self.bar.show_for(time, BAR_IDLE_SECS);
+        }
+        if response.clicked() && self.focus == Focus::List {
+            self.focus = Focus::Video;
         }
         if response.double_clicked() {
             self.actions.push(Action::ToggleFullscreen);

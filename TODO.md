@@ -23,9 +23,6 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
       answer. Timeshift keys (Space, arrows, Home, End) not yet tried on
       Windows. Xtream Codes (`/timeshift/<user>/<pass>/<min>/<Y-m-d:H-M>/<id>`)
       is not supported yet: the server's time zone is unclear.
-- [ ] Fullscreen-first navigation: channel list and group picker as overlays
-      over the video, fully usable from the keyboard (and a remote or a
-      gamepad, see "Gamepads and Steam Deck").
 - [ ] Several playlists (providers) at once.
 - [ ] Parental control: PIN for chosen groups/channels.
 - [ ] Picture-in-picture (second player instance) — later.
@@ -69,8 +66,8 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
       system, so no `libmpv2` package). Game Mode: added as a non-Steam game, runs fullscreen under
       gamescope. Check VAAPI hardware decoding on the Deck's GPU.
 - [ ] Gamepad control. Steam Input can already map the Deck's controls to
-      keys (D-pad → PageUp/PageDown, A → Enter, B → Esc), so a keyboard-only
-      UI is the first step (see "Fullscreen-first navigation"). Native support
+      keys (D-pad → arrows, A → Enter, B → Esc, shoulder buttons → PageUp/
+      PageDown): the keyboard-only UI covers that. Native support
       later, e.g. with the `gilrs` crate (reads controllers without SDL):
       D-pad moves through the list, A plays, B goes back, shoulder buttons
       switch groups, triggers change volume.

@@ -37,6 +37,18 @@ use logo::Logos;
 use schedule::ScheduleView;
 use view::{BAR_START_SECS, BarState};
 
+/// Which part of the window the arrow keys and Enter act on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Focus {
+    /// ↑/↓ switch channels, ←/→ move in the archive, Enter opens the list.
+    #[default]
+    Video,
+    /// ↑/↓ move the selection, ←/→ change the group, Enter plays.
+    List,
+    /// ↑/↓ move through the programmes, Enter opens one (again: Watch).
+    Guide,
+}
+
 /// What the current stream is doing, as shown on top of the video.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum StreamState {
@@ -379,6 +391,8 @@ pub struct App {
     list_overlay: ListOverlay,
     /// The programme guide panel.
     schedule: ScheduleView,
+    /// Where the arrow keys and Enter go.
+    focus: Focus,
     stall: StallWatch,
     /// Display number of each channel (same order as the playlist).
     numbers: Vec<u32>,
@@ -517,6 +531,7 @@ impl App {
             // Real value set in `from_args`; tests stay independent of the session.
             on_top_supported: true,
             schedule: ScheduleView::default(),
+            focus: Focus::default(),
             stall: StallWatch::default(),
             current: None,
             logos: None,
@@ -1329,6 +1344,17 @@ impl App {
         if self.settings.is_some() || ctx.egui_wants_keyboard_input() {
             return;
         }
+        // An open menu (groups, tracks) takes the keys itself.
+        if egui::Popup::is_any_open(ctx) {
+            return;
+        }
+        // A clicked button keeps egui's keyboard focus, and Space or Enter
+        // would press it again besides the shortcut: let go of it.
+        ctx.memory_mut(|m| {
+            if let Some(id) = m.focused() {
+                m.surrender_focus(id);
+            }
+        });
         let pressed = |key| ctx.input(|i| i.key_pressed(key));
         let time = ctx.input(|i| i.time);
         if pressed(egui::Key::F) {
@@ -1355,9 +1381,10 @@ impl App {
             self.go_back();
         }
         // Esc cancels typing, then closes the guide, then leaves fullscreen.
+        // Esc cancels typing, then leaves the list or the guide, then fullscreen.
         if pressed(egui::Key::Escape)
             && !self.digits.cancel()
-            && !self.schedule.close()
+            && !self.leave_focus()
             && is_fullscreen(ctx)
         {
             self.set_fullscreen(ctx, false);
@@ -1392,11 +1419,16 @@ impl App {
         if pressed(egui::Key::Enter) {
             match self.digits.finish(time, true) {
                 Some(n) => self.jump_to_number(n, time),
-                None => {
-                    if let Some(idx) = self.selected {
-                        self.pending_play = Some(idx);
-                    }
-                }
+                None => self.enter(unix_now()),
+            }
+        }
+        let (up, down) = (pressed(egui::Key::ArrowUp), pressed(egui::Key::ArrowDown));
+        if up || down {
+            let delta = if up { -1 } else { 1 };
+            match self.focus {
+                Focus::Video => self.switch_channel(delta),
+                Focus::List => self.move_selection(delta),
+                Focus::Guide => self.schedule_cursor(delta, unix_now()),
             }
         }
         if pressed(egui::Key::Space) {
@@ -1412,10 +1444,17 @@ impl App {
                 15
             }
         });
-        if pressed(egui::Key::ArrowLeft) {
+        let (left, right) = (
+            pressed(egui::Key::ArrowLeft),
+            pressed(egui::Key::ArrowRight),
+        );
+        if self.focus == Focus::List {
+            if left || right {
+                self.cycle_group(if left { -1 } else { 1 }, time);
+            }
+        } else if left {
             self.actions.push(Action::Seek(-step));
-        }
-        if pressed(egui::Key::ArrowRight) {
+        } else if right {
             self.actions.push(Action::Seek(step));
         }
         if pressed(egui::Key::Home) {
@@ -1584,7 +1623,118 @@ impl App {
         self.schedule.toggle();
         if self.schedule.open {
             self.focus_current();
+            self.focus = Focus::Guide;
+        } else if self.focus == Focus::Guide {
+            self.focus = Focus::Video;
         }
+    }
+
+    /// Enter: opens the list from the video, plays from the list, opens a
+    /// programme (or watches an open one) in the guide.
+    fn enter(&mut self, now: i64) {
+        match self.focus {
+            Focus::Video => {
+                self.focus_current();
+                self.focus = Focus::List;
+            }
+            Focus::List => {
+                if let Some(idx) = self.selected {
+                    self.pending_play = Some(idx);
+                    // Over the video, the list gets out of the way.
+                    if self.list_floats() {
+                        self.focus = Focus::Video;
+                    }
+                }
+            }
+            Focus::Guide => {
+                let Some(idx) = self.guide_channel() else {
+                    return;
+                };
+                let list = self.guide.schedule(&self.epg, idx);
+                let archive = self.archive_of(idx).cloned();
+                let in_archive =
+                    |start: i64| archive.as_ref().is_some_and(|a| a.covers(start, now));
+                if let Some(start) = self.schedule.activate(&list, now, in_archive) {
+                    self.actions.push(Action::PlayArchive {
+                        channel: idx,
+                        start,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Esc on the list or the guide: back to the video. False if the video
+    /// had the keys already.
+    fn leave_focus(&mut self) -> bool {
+        match self.focus {
+            Focus::Video => self.schedule.close(),
+            Focus::List => {
+                self.focus = Focus::Video;
+                true
+            }
+            Focus::Guide => {
+                self.schedule.close();
+                self.focus = Focus::Video;
+                true
+            }
+        }
+    }
+
+    /// The list is drawn over the video (fullscreen, or hidden in a window
+    /// and called up with the keyboard).
+    fn list_floats(&self) -> bool {
+        self.fullscreen || !self.config.view.list_visible
+    }
+
+    /// ↑/↓ in the list: selects the channel above or below (no wrapping).
+    fn move_selection(&mut self, delta: isize) {
+        if self.visible.is_empty() {
+            return;
+        }
+        let current = self.selected.or(self.playing);
+        let pos = current.and_then(|c| self.visible.iter().position(|&i| i == c));
+        let next = match pos {
+            Some(p) => p.saturating_add_signed(delta).min(self.visible.len() - 1),
+            None => 0,
+        };
+        let idx = self.visible[next];
+        self.select(idx);
+        self.scroll_to = Some(idx);
+    }
+
+    /// ←/→ in the list: the previous or next group ("All groups" first).
+    fn cycle_group(&mut self, delta: isize, time: f64) {
+        let count = self.groups.len() as isize + 1;
+        let pos = match &self.group {
+            None => 0,
+            Some(g) => self
+                .groups
+                .iter()
+                .position(|x| x == g)
+                .map_or(0, |p| p as isize + 1),
+        };
+        let next = (pos + delta).rem_euclid(count);
+        self.group = (next > 0).then(|| self.groups[next as usize - 1].clone());
+        self.refilter();
+        self.show_osd(
+            self.group.as_deref().unwrap_or("All groups").to_string(),
+            time,
+        );
+        // Keep the selection if the channel is in the group, else take the first.
+        if !self.selected.is_some_and(|s| self.visible.contains(&s)) {
+            self.selected = self.visible.first().copied();
+        }
+        self.scroll_to = self.selected;
+    }
+
+    /// ↑/↓ in the guide panel.
+    fn schedule_cursor(&mut self, delta: isize, now: i64) {
+        let Some(idx) = self.guide_channel() else {
+            return;
+        };
+        let list = self.guide.schedule(&self.epg, idx);
+        self.schedule.move_cursor(&list, now, delta);
     }
 
     /// Call once per frame with whether the channel list is on screen:
@@ -1923,7 +2073,11 @@ impl eframe::App for App {
         self.apply_view(ui.ctx());
         let fullscreen = is_fullscreen(ui.ctx());
         self.fullscreen = fullscreen;
-        let mode = list_mode(fullscreen, self.config.view.list_visible);
+        let mode = list_mode(
+            fullscreen,
+            self.config.view.list_visible,
+            self.focus == Focus::List,
+        );
         let screen = ui.max_rect();
         if mode == ListMode::Hidden {
             self.list_on_screen(false);
@@ -2063,10 +2217,13 @@ enum ListMode {
     Hidden,
 }
 
-fn list_mode(fullscreen: bool, list_visible: bool) -> ListMode {
+/// `list_focused`: the keyboard is on the list, so a hidden list comes up
+/// over the video.
+fn list_mode(fullscreen: bool, list_visible: bool, list_focused: bool) -> ListMode {
     match (fullscreen, list_visible) {
         (true, _) => ListMode::Overlay,
         (false, true) => ListMode::Docked,
+        (false, false) if list_focused => ListMode::Overlay,
         (false, false) => ListMode::Hidden,
     }
 }
@@ -2598,6 +2755,83 @@ mod tests {
     }
 
     #[test]
+    fn enter_and_escape_move_the_keyboard_between_video_and_list() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+        app.playing = Some(1);
+        app.enter(0);
+        assert_eq!(app.focus, Focus::List);
+        assert_eq!(app.selected, Some(1), "starts at the channel playing");
+        app.move_selection(1);
+        app.enter(0);
+        assert_eq!(app.pending_play, Some(2));
+        assert_eq!(app.focus, Focus::List, "a docked list keeps the keys");
+        app.fullscreen = true;
+        app.enter(0);
+        assert_eq!(
+            app.focus,
+            Focus::Video,
+            "over the video it gets out of the way"
+        );
+        app.focus = Focus::List;
+        assert!(app.leave_focus());
+        assert_eq!(app.focus, Focus::Video);
+        assert!(!app.leave_focus(), "Esc goes on to leave fullscreen");
+    }
+
+    #[test]
+    fn arrows_in_the_list_select_and_change_groups() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+        app.focus = Focus::List;
+        app.move_selection(-1);
+        assert_eq!(app.selected, Some(0), "nothing selected: the first");
+        app.move_selection(-1);
+        assert_eq!(app.selected, Some(0), "no wrapping");
+        app.move_selection(5);
+        assert_eq!(app.selected, Some(2));
+        // Groups: All → Movies → News → Sports → All.
+        assert_eq!(app.groups, ["Movies", "News", "Sports"]);
+        app.cycle_group(1, 0.0);
+        assert_eq!(app.group.as_deref(), Some("Movies"));
+        assert_eq!(
+            app.selected,
+            Some(1),
+            "the selection follows into the group"
+        );
+        app.cycle_group(-1, 0.0);
+        app.cycle_group(-1, 0.0);
+        assert_eq!(app.group.as_deref(), Some("Sports"));
+        assert_eq!(app.visible, [2]);
+    }
+
+    #[test]
+    fn guide_keys_open_a_programme_and_then_watch_it() {
+        let now = 100_000;
+        let (playlist, epg) = demo_data(now);
+        let mut app = App::new(playlist, epg, vec![]);
+        app.selected = Some(0); // the news channel has an archive
+        app.toggle_schedule();
+        assert_eq!(app.focus, Focus::Guide);
+        app.schedule_cursor(1, now);
+        app.schedule_cursor(-1, now);
+        // On the programme on air: Enter opens it, Enter again watches it.
+        app.enter(now);
+        assert!(app.actions.is_empty());
+        app.enter(now);
+        assert_eq!(
+            app.actions,
+            [Action::PlayArchive {
+                channel: 0,
+                start: now - 1800
+            }]
+        );
+        assert!(app.leave_focus());
+        assert!(!app.schedule.open);
+        assert_eq!(app.focus, Focus::Video);
+    }
+
+    #[test]
     fn favorites_toggle_filter_and_persist() {
         let (playlist, epg) = demo_data(0);
         let mut app = App::new(playlist, epg, vec![]);
@@ -2878,11 +3112,16 @@ mod tests {
 
     #[test]
     fn list_is_docked_slides_in_or_stays_away() {
-        assert_eq!(list_mode(false, true), ListMode::Docked);
+        assert_eq!(list_mode(false, true, false), ListMode::Docked);
         // Hidden in a window: no sliding in at the edge.
-        assert_eq!(list_mode(false, false), ListMode::Hidden);
-        assert_eq!(list_mode(true, true), ListMode::Overlay);
-        assert_eq!(list_mode(true, false), ListMode::Overlay);
+        assert_eq!(list_mode(false, false, false), ListMode::Hidden);
+        assert_eq!(
+            list_mode(false, false, true),
+            ListMode::Overlay,
+            "called up by keyboard"
+        );
+        assert_eq!(list_mode(true, true, false), ListMode::Overlay);
+        assert_eq!(list_mode(true, false, false), ListMode::Overlay);
     }
 
     #[test]

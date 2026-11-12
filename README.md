@@ -124,7 +124,6 @@ folder; choose files elsewhere with **Browse…**.
 | Key | Action |
 |---|---|
 | click / double-click a channel | select / play it (right-click: favorites) |
-| `Enter` | play the selected channel |
 | digits | jump to the channel with that number (`tvg-chno`, or its position) |
 | `Backspace` | back to the previous channel |
 | `PageUp` / `PageDown` | previous / next channel |
@@ -139,9 +138,22 @@ folder; choose files elsewhere with **Browse…**.
 | `R` | restart the stream (also after "no picture for 20 s") |
 | `G` | programme guide of the channel (`Esc` closes it) |
 | `Space` | pause / resume |
-| `←` / `→` | archive channels: back / forward 15 s (`Shift`: 1 min, `Ctrl`: 10 min) |
 | `Home` | archive channels: start of the programme (again: the one before) |
 | `End` | back to live |
+
+The arrow keys and `Enter` act on the video, the channel list or the guide
+panel, whichever has the keyboard (the list's selected channel and the
+guide's programme get a coloured outline). `Enter` on the video moves it to
+the list, `Esc` back; opening the guide with `G` moves it there; clicking
+moves it too. Everything can be done without a mouse, also in fullscreen,
+where the list comes up over the video.
+
+| Key | Video | Channel list | Guide panel |
+|---|---|---|---|
+| `↑` / `↓` | previous / next channel | move the selection | move through the programmes |
+| `←` / `→` | archive channels: back / forward 15 s (`Shift`: 1 min, `Ctrl`: 10 min) | previous / next group | as on the video |
+| `Enter` | open the list | play the selected channel | open the programme; again: watch it from the archive |
+| `Esc` | leave fullscreen | back to the video | close the guide |
 | `I` | info: the programme in full (whole description, next) → stream info (resolution, codecs, HDR, decoder, bitrate) → off |
 
 Moving the mouse over the video brings up the bar with the programme guide

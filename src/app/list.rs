@@ -10,7 +10,7 @@ use openzap::config::Side;
 
 use super::logo::paint_logo;
 use super::palette::palette;
-use super::{Action, App, window_drag_background};
+use super::{Action, App, Focus, window_drag_background};
 
 /// Width of the list when it slides in over the video.
 const OVERLAY_WIDTH: f32 = 340.0;
@@ -93,9 +93,11 @@ impl App {
         // While the list is out, an open menu (group picker, context menu)
         // counts as using it; menus of the bottom bar must not pull it in.
         let menu_open = self.list_overlay.rect.is_some() && egui::Popup::is_any_open(ctx);
+        // The keyboard on the list keeps it out.
+        let keyboard = self.focus == Focus::List;
         let visible = self
             .list_overlay
-            .is_visible(time, at_edge, over || menu_open);
+            .is_visible(time, at_edge, over || menu_open || keyboard);
         let shown =
             ctx.animate_bool_with_time(egui::Id::unique("list-overlay"), visible, SLIDE_SECS);
         if let Some(secs) = self.list_overlay.remaining(time) {
@@ -250,6 +252,7 @@ impl App {
         });
         if let Some(idx) = clicked {
             self.select(idx);
+            self.focus = Focus::List;
         }
         if let Some(idx) = play {
             self.pending_play = Some(idx);
@@ -287,6 +290,15 @@ impl App {
         };
         let painter = ui.painter();
         painter.rect_filled(rect, 4.0, fill);
+        if selected && self.focus == Focus::List {
+            // The keyboard is here: an outline that is easy to spot.
+            painter.rect_stroke(
+                rect.shrink(1.0),
+                4.0,
+                egui::Stroke::new(2.0, colors.time),
+                egui::StrokeKind::Inside,
+            );
+        }
         if playing {
             // Accent stripe on the left marks the channel on screen.
             let stripe = egui::Rect::from_min_size(rect.min, egui::vec2(4.0, rect.height()));
