@@ -40,6 +40,11 @@
     <control>pointing</control>
   </supports>
   <releases>
+    <release version="0.5.0" date="2026-11-12">
+      <description>
+        <p>Archive (catch-up) and timeshift: watch past programmes from the guide, pause, rewind and go back to live on channels whose provider keeps an archive. A time shift per channel for guides that run ahead or behind.</p>
+      </description>
+    </release>
     <release version="0.4.2" date="2026-11-11">
       <description>
         <p>Switching the audio track no longer leaves live channels silent; the next channel starts with its own default tracks.</p>
