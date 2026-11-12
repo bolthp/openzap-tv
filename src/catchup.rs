@@ -156,6 +156,38 @@ pub fn max_days(playlist: &Playlist) -> u32 {
         .unwrap_or(0)
 }
 
+/// One line about the playlist's archive for the debug log (no URLs):
+/// "archive: 12 of 40 channels (shift 10, flussonic 2), up to 7 days".
+pub fn summary(playlist: &Playlist) -> String {
+    let with: Vec<&Catchup> = playlist
+        .channels
+        .iter()
+        .filter_map(|c| c.catchup.as_ref())
+        .collect();
+    if with.is_empty() {
+        return "archive: none in the playlist".into();
+    }
+    let modes = [
+        (Mode::Shift, "shift"),
+        (Mode::Flussonic, "flussonic"),
+        (Mode::Default, "default"),
+        (Mode::Append, "append"),
+    ]
+    .iter()
+    .filter_map(|&(mode, name)| {
+        let n = with.iter().filter(|c| c.mode == mode).count();
+        (n > 0).then(|| format!("{name} {n}"))
+    })
+    .collect::<Vec<_>>()
+    .join(", ");
+    format!(
+        "archive: {} of {} channels ({modes}), up to {} days",
+        with.len(),
+        playlist.channels.len(),
+        max_days(playlist)
+    )
+}
+
 /// Splits a URL into the part up to the last path segment, that segment,
 /// and the rest (`?query`), or `None` if there is no path.
 fn split_last_segment(url: &str) -> Option<(&str, &str, &str)> {
@@ -422,6 +454,25 @@ mod tests {
         );
         let dbg = format!("{:?}", a.resolve("x").unwrap());
         assert!(!dbg.contains("fakekey123"), "{dbg}");
+    }
+
+    #[test]
+    fn summary_counts_channels_by_scheme() {
+        let pl = crate::m3u::parse(
+            "#EXTM3U\n\
+             #EXTINF:-1 catchup=\"shift\" catchup-days=\"3\",A\nhttp://example.com/a\n\
+             #EXTINF:-1 tvg-rec=\"7\",B\nhttp://example.com/b/index.m3u8\n\
+             #EXTINF:-1,C\nhttp://example.com/c\n",
+        )
+        .unwrap();
+        assert_eq!(
+            summary(&pl),
+            "archive: 2 of 3 channels (shift 1, flussonic 1), up to 7 days"
+        );
+        assert_eq!(
+            summary(&Playlist::default()),
+            "archive: none in the playlist"
+        );
     }
 
     #[test]

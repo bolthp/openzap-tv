@@ -634,6 +634,9 @@ impl App {
             ),
             Err(e) => format!("playlist error: {e}"),
         });
+        if let Ok(f) = &result {
+            self.dlog(&catchup::summary(&f.data));
+        }
         match result {
             Ok(fetched) => {
                 if let Some(why) = &fetched.stale {
@@ -861,6 +864,11 @@ impl App {
     fn archive_of(&self, idx: usize) -> Option<&Catchup> {
         let channel = self.playlist.channels.get(idx)?;
         channel.catchup.as_ref().filter(|_| self.config.archive)
+    }
+
+    /// Short archive mark for the channel ("⏪ 7d"), if it has an archive.
+    fn archive_badge(&self, idx: usize) -> Option<String> {
+        self.archive_of(idx).map(|a| format!("⏪ {}d", a.days))
     }
 
     /// Plays the programme of channel `idx` starting at `start` from the archive.
@@ -2138,8 +2146,11 @@ mod tests {
         let mut app = App::new(playlist, epg, vec![]);
         assert!(app.archive_of(0).is_some(), "demo news has an archive");
         assert!(app.archive_of(1).is_none());
+        assert_eq!(app.archive_badge(0).as_deref(), Some("⏪ 1d"));
+        assert_eq!(app.archive_badge(1), None);
         app.config.archive = false;
         assert!(app.archive_of(0).is_none());
+        assert_eq!(app.archive_badge(0), None);
     }
 
     #[test]

@@ -334,7 +334,15 @@ impl App {
             painter.galley(egui::pos2(x, inner.top()), star, STAR);
             x += width;
         }
-        let name = elided(painter, &channel.name, body, text, inner.right() - x);
+        // Archive mark at the right end of the name line.
+        let mut name_right = inner.right();
+        if let Some(badge) = self.archive_badge(idx) {
+            let badge = painter.layout_no_wrap(badge, small.clone(), time);
+            let y = inner.top() + (body.size - small.size) / 2.0;
+            name_right -= badge.size().x + 6.0;
+            painter.galley(egui::pos2(inner.right() - badge.size().x, y), badge, time);
+        }
+        let name = elided(painter, &channel.name, body, text, name_right - x);
         painter.galley(egui::pos2(x, inner.top()), name, text);
 
         if let Some(p) = self.guide.now_next(&self.epg, idx, now).now {

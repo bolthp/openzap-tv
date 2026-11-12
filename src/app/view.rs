@@ -365,6 +365,10 @@ impl App {
             if let Some(group) = &channel.group_title {
                 ui.colored_label(colors.secondary, group);
             }
+            if let Some(archive) = self.archive_of(idx) {
+                ui.colored_label(colors.time, format!("⏪ Archive {} days", archive.days))
+                    .on_hover_text("Past programmes can be watched from the guide (G)");
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(egui::RichText::new(clock::local_hm(now)).heading());
                 // Failures are already shown in the middle of the video.
