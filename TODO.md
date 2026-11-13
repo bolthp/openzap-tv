@@ -79,8 +79,10 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
       next, e.g. with the `gilrs` crate (reads controllers without SDL):
       D-pad moves through the list, A plays, B goes back, shoulder buttons
       switch groups, triggers change volume.
-- [ ] "TV" layout for small screens / couch distance: larger text and rows,
-      focus highlight that is easy to see.
+- [ ] "TV" layout for small screens / couch distance: the interface scale
+      (settings, `Ctrl` + `+`/`-`/`0`, 75–200 %) makes text and rows larger;
+      try 150 % on the Deck. Maybe choose a larger scale by itself in Game
+      Mode, and a wider focus outline, once it has been seen there.
 
 ## Packaging
 

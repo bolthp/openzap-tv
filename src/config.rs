@@ -85,6 +85,26 @@ impl UpdatePolicy {
     }
 }
 
+/// Interface scales offered in the settings and stepped through with
+/// `Ctrl` + `+` / `-`, in percent.
+pub const SCALES: [u32; 6] = [75, 100, 125, 150, 175, 200];
+
+/// Limits a scale (percent) to the supported range.
+pub fn clamp_scale(percent: u32) -> u32 {
+    percent.clamp(SCALES[0], SCALES[SCALES.len() - 1])
+}
+
+/// The next offered scale above (`up`) or below `percent`; stays at the
+/// ends of the range.
+pub fn step_scale(percent: u32, up: bool) -> u32 {
+    let next = if up {
+        SCALES.iter().find(|&&s| s > percent)
+    } else {
+        SCALES.iter().rev().find(|&&s| s < percent)
+    };
+    next.copied().unwrap_or_else(|| clamp_scale(percent))
+}
+
 /// Window layout preferences.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ViewSettings {
@@ -92,6 +112,9 @@ pub struct ViewSettings {
     pub list_visible: bool,
     pub always_on_top: bool,
     pub theme: Theme,
+    /// Size of text and controls in percent of the system's size
+    /// (larger for small screens or watching from a distance).
+    pub scale_percent: u32,
 }
 
 impl Default for ViewSettings {
@@ -101,6 +124,7 @@ impl Default for ViewSettings {
             list_visible: true,
             always_on_top: false,
             theme: Theme::System,
+            scale_percent: 100,
         }
     }
 }
@@ -283,6 +307,11 @@ impl Config {
                         cfg.view.theme = t;
                     }
                 }
+                "scale" => {
+                    if let Ok(percent) = value.parse::<u32>() {
+                        cfg.view.scale_percent = clamp_scale(percent);
+                    }
+                }
                 "playlist_update" => {
                     if let Some(p) = UpdatePolicy::parse(value) {
                         cfg.playlist_update = p;
@@ -341,6 +370,7 @@ impl Config {
             yes_no(self.view.always_on_top)
         ));
         out.push_str(&format!("theme={}\n", self.view.theme.key()));
+        out.push_str(&format!("scale={}\n", self.view.scale_percent));
         if let Some(c) = &self.last_channel {
             out.push_str(&format!("last_channel={}\n", one_line(c)));
         }
@@ -482,6 +512,7 @@ mod tests {
                 list_visible: false,
                 always_on_top: true,
                 theme: Theme::Dark,
+                scale_percent: 150,
             },
             playlist_update: UpdatePolicy::Never,
             epg_update: UpdatePolicy::OnStart,
@@ -542,6 +573,24 @@ mod tests {
         }
         let cfg = Config::parse("list_side=top\nlist_visible=maybe\naspect=21:9\ntheme=pink\n");
         assert_eq!(cfg.view, ViewSettings::default());
+    }
+
+    #[test]
+    fn interface_scale_is_clamped_and_stepped() {
+        assert_eq!(Config::parse("").view.scale_percent, 100);
+        assert_eq!(Config::parse("scale=150").view.scale_percent, 150);
+        // Values typed by hand may lie between the offered steps.
+        assert_eq!(Config::parse("scale=110").view.scale_percent, 110);
+        assert_eq!(Config::parse("scale=10").view.scale_percent, 75);
+        assert_eq!(Config::parse("scale=900").view.scale_percent, 200);
+        assert_eq!(Config::parse("scale=big").view.scale_percent, 100);
+
+        assert_eq!(step_scale(100, true), 125);
+        assert_eq!(step_scale(100, false), 75);
+        assert_eq!(step_scale(110, true), 125);
+        assert_eq!(step_scale(110, false), 100);
+        assert_eq!(step_scale(200, true), 200);
+        assert_eq!(step_scale(75, false), 75);
     }
 
     #[test]

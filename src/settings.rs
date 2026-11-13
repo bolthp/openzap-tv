@@ -2,7 +2,7 @@
 
 use eframe::egui;
 use openzap::cache;
-use openzap::config::{Config, Theme, UpdatePolicy};
+use openzap::config::{Config, SCALES, Theme, UpdatePolicy};
 use openzap::player::{HardwareDecoding, PlaybackSettings};
 
 use crate::filepick::PickTarget;
@@ -16,6 +16,8 @@ pub struct SettingsDraft {
     pub archive: bool,
     pub playback: PlaybackSettings,
     pub theme: Theme,
+    /// Interface scale, percent.
+    pub scale_percent: u32,
     pub playlist_update: UpdatePolicy,
     pub epg_update: UpdatePolicy,
     /// Size of the cache folder (`None`: no cache on disk).
@@ -39,6 +41,7 @@ impl SettingsDraft {
             archive: config.archive,
             playback: config.playback,
             theme: config.view.theme,
+            scale_percent: config.view.scale_percent,
             playlist_update: config.playlist_update,
             epg_update: config.epg_update,
             cache_size: None,
@@ -217,7 +220,21 @@ fn body(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
                     }
                 });
             ui.end_row();
+            ui.label("Size of text and controls");
+            egui::ComboBox::from_id_salt("scale")
+                .selected_text(scale_label(draft.scale_percent))
+                .show_ui(ui, |ui| {
+                    for percent in SCALES {
+                        ui.selectable_value(
+                            &mut draft.scale_percent,
+                            percent,
+                            scale_label(percent),
+                        );
+                    }
+                });
+            ui.end_row();
         });
+    ui.small("Larger for small screens or watching from the couch. Also: Ctrl with + or −.");
 
     if let Some(size) = draft.cache_size {
         section(ui, "Cache");
@@ -289,6 +306,10 @@ fn section(ui: &mut egui::Ui, title: &str) {
     ui.add_space(2.0);
 }
 
+fn scale_label(percent: u32) -> String {
+    format!("{percent} %")
+}
+
 fn hwdec_label(mode: HardwareDecoding) -> &'static str {
     match mode {
         HardwareDecoding::Off => "Off (CPU)",
@@ -343,6 +364,8 @@ mod tests {
             egui::vec2(1280.0, 800.0), // Steam Deck
             egui::vec2(1280.0, 720.0),
             egui::vec2(720.0, 480.0), // the smallest window allowed
+            egui::vec2(640.0, 400.0), // Steam Deck at 200 %
+            egui::vec2(360.0, 240.0), // the smallest window at 200 %
         ] {
             let window = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
             let rect = dialog_rect(size);

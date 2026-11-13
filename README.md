@@ -21,6 +21,7 @@ Desktop IPTV player for Windows, Linux and macOS: HLS/HTTP streams, M3U playlist
   controls slide up over the video
 - Audio track and subtitle switching, picture size (aspect ratio, crop, stretch), always on top
 - Dark, light or system theme
+- Interface scale from 75 to 200 % for small screens or watching from the couch
 - Channel logos (`tvg-logo` from the playlist, otherwise the guide's channel
   icon), cached on disk for a week
 - Programme times in local time
@@ -138,6 +139,7 @@ folder; choose files elsewhere with **Browse…**.
 | `R` | restart the stream (also after "no picture for 20 s") |
 | `G` | programme guide of the channel (`Esc` closes it) |
 | `Space` | pause / resume |
+| `Ctrl` + `+` / `-` / `0` | larger / smaller / normal text and controls (also in the settings) |
 | `Home` | archive channels: start of the programme (again: the one before) |
 | `End` | back to live |
 

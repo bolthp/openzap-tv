@@ -383,7 +383,7 @@ pub struct App {
     scroll_to: Option<usize>,
     /// The channel list was on screen last frame.
     list_was_shown: bool,
-    /// The theme still needs to be sent to egui.
+    /// The theme and interface scale still need to be sent to egui.
     view_pending: bool,
     /// The window is fullscreen (as of the start of this frame).
     fullscreen: bool,
@@ -817,6 +817,10 @@ impl App {
             self.config.view.theme = draft.theme;
             self.view_pending = true;
         }
+        if draft.scale_percent != self.config.view.scale_percent {
+            self.config.view.scale_percent = draft.scale_percent;
+            self.view_pending = true;
+        }
         if draft.playback != self.config.playback {
             self.config.playback = draft.playback;
             let applied = self.player.as_ref().map(|p| p.apply(&draft.playback));
@@ -830,6 +834,9 @@ impl App {
 
     pub fn set_context(&mut self, ctx: egui::Context) {
         palette::install(&ctx);
+        // The scale is a setting here (kept between runs); egui's own
+        // Ctrl +/- would change it behind the setting's back.
+        ctx.options_mut(|o| o.zoom_with_keyboard = false);
         self.logos = Some(Logos::new(&ctx));
         self.ctx = ctx;
     }
@@ -1366,6 +1373,21 @@ impl App {
         }
         let pressed = |key| ctx.input(|i| i.key_pressed(key));
         let time = ctx.input(|i| i.time);
+        // Ctrl with +, - or 0: interface scale (the digit is not a channel
+        // number then).
+        if ctx.input(|i| i.modifiers.command) {
+            let current = self.config.view.scale_percent;
+            if pressed(egui::Key::Plus) || pressed(egui::Key::Equals) {
+                self.set_scale(config::step_scale(current, true), time);
+            } else if pressed(egui::Key::Minus) {
+                self.set_scale(config::step_scale(current, false), time);
+            } else if pressed(egui::Key::Num0) {
+                self.set_scale(100, time);
+            }
+            if pressed(egui::Key::Num0) {
+                return;
+            }
+        }
         if pressed(egui::Key::F) {
             self.set_fullscreen(ctx, !is_fullscreen(ctx));
         }
@@ -1487,11 +1509,13 @@ impl App {
         }
         let info = ctx.input(|i| i.viewport().clone());
         self.dlog(&format!(
-            "window at {when}: inner {:?}, outer {:?}, monitor {:?}, scale {:?}, wayland {}",
+            "window at {when}: inner {:?}, outer {:?}, monitor {:?}, scale {:?}, \
+             interface {} %, wayland {}",
             info.inner_rect,
             info.outer_rect,
             info.monitor_size,
             info.native_pixels_per_point,
+            self.config.view.scale_percent,
             platform::is_wayland(),
         ));
     }
@@ -1873,6 +1897,16 @@ impl App {
         }
     }
 
+    /// Changes the interface scale (percent) and shows it.
+    fn set_scale(&mut self, percent: u32, time: f64) {
+        if percent != self.config.view.scale_percent {
+            self.config.view.scale_percent = percent;
+            self.view_pending = true;
+            self.pending_save = true;
+        }
+        self.show_osd(format!("Interface: {percent} %"), time);
+    }
+
     fn toggle_on_top(&mut self, time: f64) {
         if !self.on_top_supported {
             self.show_osd(ON_TOP_UNAVAILABLE, time);
@@ -2031,7 +2065,8 @@ impl App {
         ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(level));
     }
 
-    /// Sends the window level and theme to the window when they change.
+    /// Sends the window level, theme and interface scale to the window when
+    /// they change.
     fn apply_view(&mut self, ctx: &egui::Context) {
         if self.on_top_supported {
             let on_top = wants_on_top(self.config.view.always_on_top, is_fullscreen(ctx));
@@ -2045,6 +2080,9 @@ impl App {
             Theme::Dark => egui::ThemePreference::Dark,
             Theme::Light => egui::ThemePreference::Light,
         });
+        // egui multiplies the system's scale (HiDPI) by this factor, so
+        // every size given in points grows with it.
+        ctx.set_zoom_factor(self.config.view.scale_percent as f32 / 100.0);
     }
 }
 
@@ -3594,6 +3632,41 @@ mod tests {
         app.apply_settings(d);
         assert_eq!(app.config.view.theme, Theme::Dark);
         assert!(app.view_pending && app.pending_save);
+    }
+
+    #[test]
+    fn interface_scale_is_saved_and_applied() {
+        let mut app = App::new(Playlist::default(), Epg::default(), vec![]);
+        let ctx = egui::Context::default();
+        app.view_pending = false;
+        let mut d = draft(&app);
+        d.scale_percent = 150;
+        app.apply_settings(d);
+        assert_eq!(app.config.view.scale_percent, 150);
+        assert!(app.view_pending && app.pending_save);
+        // egui takes a new scale over at the start of the next frame.
+        let zoom_after_a_frame = || {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+            output.textures_delta.clear(); // nothing renders them here
+            ctx.zoom_factor()
+        };
+        app.apply_view(&ctx);
+        assert_eq!(zoom_after_a_frame(), 1.5);
+
+        // The keys' way: shown on screen, saved, sent to egui.
+        app.pending_save = false;
+        app.set_scale(175, 0.0);
+        assert!(app.view_pending && app.pending_save);
+        assert_eq!(
+            app.osd.as_ref().map(|(t, _)| t.as_str()),
+            Some("Interface: 175 %")
+        );
+        app.apply_view(&ctx);
+        assert_eq!(zoom_after_a_frame(), 1.75);
+        // Nothing to save when it stays as it is.
+        app.pending_save = false;
+        app.set_scale(175, 0.0);
+        assert!(!app.pending_save);
     }
 
     #[test]
