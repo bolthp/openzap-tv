@@ -1165,6 +1165,7 @@ impl App {
 
     fn toggle_mute(&mut self, now: f64) {
         self.muted = !self.muted;
+        self.dlog(&format!("mute: {}", self.muted));
         self.apply_volume();
         let text = if self.muted { "Muted" } else { "Sound on" };
         self.show_osd(text, now);
@@ -1172,6 +1173,7 @@ impl App {
 
     fn change_volume(&mut self, delta: f64, now: f64) {
         self.volume = (self.volume + delta).clamp(0.0, 100.0);
+        self.dlog(&format!("volume: {:.0}%", self.volume));
         self.pending_volume = true;
         self.pending_save = true;
         self.osd = Some((format!("Volume {:.0}%", self.volume), now + OSD_SECS));
@@ -1355,6 +1357,13 @@ impl App {
                 m.surrender_focus(id);
             }
         });
+        // Not reached while a text field has the keyboard, so typed
+        // addresses never get into the log.
+        if self.log.is_some()
+            && let Some(line) = ctx.input(|i| pressed_keys_line(&i.events))
+        {
+            self.dlog(&line);
+        }
         let pressed = |key| ctx.input(|i| i.key_pressed(key));
         let time = ctx.input(|i| i.time);
         if pressed(egui::Key::F) {
@@ -2163,6 +2172,46 @@ fn unix_now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64)
+}
+
+/// Why nothing can be heard right now, for the reminder over the video
+/// (`None`: sound is on).
+fn silence_note(muted: bool, volume: f64, audio_disabled: bool) -> Option<&'static str> {
+    if muted {
+        Some("🔇 Muted (M)")
+    } else if volume <= 0.0 {
+        Some("🔇 Volume 0%")
+    } else if audio_disabled {
+        Some("🔇 No sound on this channel")
+    } else {
+        None
+    }
+}
+
+/// The keys pressed in this frame, for the debug log (`None`: no keys).
+/// Shows what a gamepad mapping such as Steam Input really sends.
+fn pressed_keys_line(events: &[egui::Event]) -> Option<String> {
+    let keys: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            egui::Event::Key {
+                key,
+                pressed: true,
+                repeat: false,
+                modifiers,
+                ..
+            } if modifiers.is_none() => Some(key.name().to_string()),
+            egui::Event::Key {
+                key,
+                pressed: true,
+                repeat: false,
+                modifiers,
+                ..
+            } => Some(format!("{modifiers:?}+{}", key.name())),
+            _ => None,
+        })
+        .collect();
+    (!keys.is_empty()).then(|| format!("keys: {}", keys.join(" ")))
 }
 
 fn is_fullscreen(ctx: &egui::Context) -> bool {
@@ -3545,6 +3594,43 @@ mod tests {
         app.apply_settings(d);
         assert_eq!(app.config.view.theme, Theme::Dark);
         assert!(app.view_pending && app.pending_save);
+    }
+
+    #[test]
+    fn silence_note_names_the_reason() {
+        assert_eq!(silence_note(false, 80.0, false), None);
+        assert_eq!(silence_note(true, 80.0, false), Some("🔇 Muted (M)"));
+        assert_eq!(silence_note(false, 0.0, false), Some("🔇 Volume 0%"));
+        assert_eq!(
+            silence_note(false, 80.0, true),
+            Some("🔇 No sound on this channel")
+        );
+        // Mute is the first thing to undo.
+        assert_eq!(silence_note(true, 0.0, true), Some("🔇 Muted (M)"));
+    }
+
+    #[test]
+    fn pressed_keys_are_listed_for_the_log() {
+        let key = |key, pressed, repeat, modifiers| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat,
+            modifiers,
+        };
+        let none = egui::Modifiers::NONE;
+        let events = [
+            key(egui::Key::M, true, false, none),
+            key(egui::Key::M, false, false, none), // release
+            key(egui::Key::ArrowUp, true, true, none), // auto-repeat
+            key(egui::Key::A, true, false, egui::Modifiers::SHIFT),
+            egui::Event::Text("m".into()),
+        ];
+        let line = pressed_keys_line(&events).unwrap();
+        assert!(line.starts_with("keys: M "), "{line}");
+        assert!(line.ends_with("+A"), "{line}");
+        assert!(!line.contains("Up"), "{line}");
+        assert_eq!(pressed_keys_line(&[egui::Event::Text("m".into())]), None);
     }
 
     #[test]

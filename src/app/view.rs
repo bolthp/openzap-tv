@@ -15,6 +15,7 @@ use super::logo::paint_logo;
 use super::palette;
 use super::{
     Action, App, Focus, InfoMode, StreamState, VOLUME_STEP, drag_window, draw_label, overlay_text,
+    silence_note,
 };
 
 /// How long the bar stays after the mouse stops moving, seconds.
@@ -267,6 +268,21 @@ impl App {
     /// Short messages (volume, mute, modes) in the top-right corner.
     fn osd_message(&mut self, ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, time: f64) {
         let Some((text, until)) = &self.osd else {
+            // No message: remind why a playing channel is silent (unless
+            // a channel number is being typed in this corner).
+            let note = silence_note(self.muted, self.volume, self.audio_disabled);
+            let free = self.playing.is_some() && self.digits.text().is_none();
+            if let Some(note) = note.filter(|_| free) {
+                let corner = rect.right_top() + egui::vec2(-16.0, 16.0);
+                draw_label(
+                    painter,
+                    corner,
+                    egui::Align2::RIGHT_TOP,
+                    note,
+                    egui::TextStyle::Body,
+                    ui,
+                );
+            }
             return;
         };
         if time < *until {

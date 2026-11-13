@@ -65,10 +65,18 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
       Desktop Mode: the Flatpak (libmpv bundled; SteamOS has a read-only
       system, so no `libmpv2` package). Game Mode: added as a non-Steam game, runs fullscreen under
       gamescope. Check VAAPI hardware decoding on the Deck's GPU.
-- [ ] Gamepad control. Steam Input can already map the Deck's controls to
+- [ ] First test on the Deck (0.5.1, Flatpak): starts and plays. Open:
+      the settings dialog did not fit the screen (0.5.2 makes it scroll;
+      check whether the UI scale or the window size was the cause — see
+      the `window at` lines of the debug log); sound was lost on all
+      channels after a while with Bluetooth headphones (cause unknown;
+      0.5.2 logs keys, mute and volume and shows why a channel is silent).
+- [ ] Gamepad control: the Deck's controls do nothing without a Steam Input
+      layout, and the "WASD" template sends letters that are shortcuts
+      here (M mutes, A switches the audio track). Steam Input can map the Deck's controls to
       keys (D-pad → arrows, A → Enter, B → Esc, shoulder buttons → PageUp/
       PageDown): the keyboard-only UI covers that. Native support
-      later, e.g. with the `gilrs` crate (reads controllers without SDL):
+      next, e.g. with the `gilrs` crate (reads controllers without SDL):
       D-pad moves through the list, A plays, B goes back, shoulder buttons
       switch groups, triggers change volume.
 - [ ] "TV" layout for small screens / couch distance: larger text and rows,
