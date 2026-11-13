@@ -40,6 +40,11 @@
     <control>pointing</control>
   </supports>
   <releases>
+    <release version="0.5.2" date="2026-11-13">
+      <description>
+        <p>The settings fit small screens such as the Steam Deck. A reminder over the video tells why a channel is silent (muted, volume 0).</p>
+      </description>
+    </release>
     <release version="0.5.1" date="2026-11-12">
       <description>
         <p>Everything works from the keyboard, also in fullscreen: the arrow keys and Enter move through the channel list, the groups and the programme guide.</p>
