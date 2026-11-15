@@ -290,6 +290,8 @@ impl Player {
             // Own name in system mixers; with mpv's default ("mpv") the
             // session manager would apply other mpv players' saved mute.
             ("audio-client-name", AUDIO_CLIENT_NAME),
+            // Stream title in mixers until a channel sets its own.
+            ("title", AUDIO_CLIENT_NAME),
         ];
         // Only builds with Lua scripts have these (e.g. not the Flatpak's):
         // without them there is nothing to turn off.
@@ -384,6 +386,11 @@ impl Player {
 
     pub fn set_mute(&self, mute: bool) -> Result<(), PlayerError> {
         self.set_property("mute", if mute { "yes" } else { "no" })
+    }
+
+    /// The title of the audio stream in system mixers (e.g. the channel).
+    pub fn set_title(&self, title: &str) -> Result<(), PlayerError> {
+        self.set_property("title", title)
     }
 
     /// Mute of the audio stream in the system mixer (`ao-mute`), separate
@@ -851,6 +858,15 @@ mod tests {
             p.get_property("audio-client-name").as_deref(),
             Some(AUDIO_CLIENT_NAME)
         );
+    }
+
+    #[test]
+    fn stream_title_starts_as_the_app_name() {
+        require_mpv!();
+        let p = headless();
+        assert_eq!(p.get_property("title").as_deref(), Some(AUDIO_CLIENT_NAME));
+        p.set_title("Example TV").unwrap();
+        assert_eq!(p.get_property("title").as_deref(), Some("Example TV"));
     }
 
     #[test]

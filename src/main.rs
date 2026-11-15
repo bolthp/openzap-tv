@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use openzap::debuglog::DebugLog;
+use openzap::mask::mask_urls_in_text;
 use openzap::platform;
 
 const DEBUG_FLAG: &str = "--debug";
@@ -20,6 +21,12 @@ fn take_debug_flag(args: &mut Vec<String>) -> bool {
     let before = args.len();
     args.retain(|a| a != DEBUG_FLAG);
     args.len() != before
+}
+
+/// The command line as written to the debug log: all arguments, `--debug`
+/// included, with access keys in URLs masked.
+fn logged_args(args: &[String]) -> Vec<String> {
+    args.iter().map(|a| mask_urls_in_text(a)).collect()
 }
 
 /// Opens the debug log next to the executable (the portable folder), or
@@ -48,6 +55,7 @@ fn main() -> eframe::Result {
 
     // Usage: openzap [--debug] [PLAYLIST.m3u [EPG.xml]]
     let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let given = logged_args(&args);
     let debug_log = take_debug_flag(&mut args).then(open_debug_log).flatten();
     if let Some(log) = &debug_log {
         log.line(&format!(
@@ -55,7 +63,7 @@ fn main() -> eframe::Result {
             env!("CARGO_PKG_VERSION"),
             std::env::consts::OS,
             std::env::consts::ARCH,
-            args
+            given
         ));
         let panic_log = Arc::clone(log);
         let default_hook = std::panic::take_hook();
@@ -130,6 +138,18 @@ fn install_desktop_entry(log: Option<&DebugLog>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn logged_args_keep_the_flag_and_hide_keys() {
+        let args = [
+            "--debug".to_string(),
+            "http://example.com/get.php?username=user&password=secret123".to_string(),
+        ];
+        let logged = logged_args(&args);
+        assert_eq!(logged[0], "--debug");
+        assert!(!logged[1].contains("secret123"), "{}", logged[1]);
+        assert!(logged[1].starts_with("http://example.com/"));
+    }
 
     #[test]
     fn debug_flag_is_removed_anywhere() {

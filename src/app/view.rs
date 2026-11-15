@@ -14,8 +14,8 @@ use openzap::timeshift;
 use super::logo::paint_logo;
 use super::palette;
 use super::{
-    Action, App, Focus, InfoMode, StreamState, VOLUME_STEP, drag_window, draw_label, overlay_text,
-    silence_note,
+    Action, App, Focus, InfoMode, QUIT_ICON, StreamState, VOLUME_STEP, drag_window, draw_label,
+    overlay_text, silence_note,
 };
 
 /// How long the bar stays after the mouse stops moving, seconds.
@@ -622,9 +622,16 @@ impl App {
         }
     }
 
-    /// Fullscreen, list, on top, guide, settings, picture size, audio
-    /// (laid out right to left).
+    /// Quit, fullscreen, list, on top, guide, settings, picture size,
+    /// audio (laid out right to left).
     fn view_controls(&mut self, ui: &mut egui::Ui) {
+        if ui
+            .button(QUIT_ICON)
+            .on_hover_text("Quit (Ctrl+Q)")
+            .clicked()
+        {
+            self.actions.push(Action::Quit);
+        }
         if ui.button("⛶").on_hover_text("Fullscreen (F)").clicked() {
             self.actions.push(Action::ToggleFullscreen);
         }

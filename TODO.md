@@ -71,6 +71,13 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
       the `window at` lines of the debug log); sound was lost on all
       channels after a while with Bluetooth headphones (cause unknown;
       0.5.2 logs keys, mute and volume and shows why a channel is silent).
+- [x] No sound in Game Mode (0.5.2): WirePlumber restored a saved mute for
+      streams named "mpv". 0.5.3 names the stream "OpenZap", shows a mute
+      by the system mixer and lifts it with M; sound confirmed on the Deck.
+      Still to see there: the "Muted in the system mixer" note and M.
+- [ ] No way to quit in Game Mode except the Steam menu: quit button (🚪)
+      and `Ctrl` + `Q`. Check on the Deck; a Steam Input layout can put
+      `Ctrl` + `Q` on a back button.
 - [ ] Gamepad control: the Deck's controls do nothing without a Steam Input
       layout, and the "WASD" template sends letters that are shortcuts
       here (M mutes, A switches the audio track). Steam Input can map the Deck's controls to

@@ -140,6 +140,7 @@ folder; choose files elsewhere with **Browse…**.
 | `G` | programme guide of the channel (`Esc` closes it) |
 | `Space` | pause / resume |
 | `Ctrl` + `+` / `-` / `0` | larger / smaller / normal text and controls (also in the settings) |
+| `Ctrl` + `Q` / 🚪 button | quit (in Steam Deck's Game Mode there is no window close button) |
 | `Home` | archive channels: start of the programme (again: the one before) |
 | `End` | back to live |
 

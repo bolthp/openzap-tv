@@ -85,6 +85,8 @@ const ON_TOP_UNAVAILABLE: &str = "Wayland: use the window menu (Alt+Space) for A
 
 /// How often the audio track list is re-read while the bar is up, seconds.
 const TRACKS_REFRESH_SECS: f64 = 1.0;
+/// The quit button's label; must be in egui's built-in fonts.
+const QUIT_ICON: &str = "🚪";
 /// How often the system mixer's mute of our stream is read, seconds.
 const SYSTEM_MUTE_CHECK_SECS: f64 = 1.0;
 
@@ -110,6 +112,7 @@ enum Action {
     SetSubtitle(Option<i64>),
     OpenSettings,
     Reload,
+    Quit,
     /// Plays `channel` from the archive at the moment `start` (Unix seconds).
     PlayArchive {
         channel: usize,
@@ -1120,6 +1123,10 @@ impl App {
         if let Some(Err(e)) = self.player.as_ref().map(|p| p.set_aspect(aspect)) {
             self.dlog(&format!("cannot set picture size: {e}"));
         }
+        // The stream's name in system mixers.
+        if let Some(Err(e)) = self.player.as_ref().map(|p| p.set_title(&channel.name)) {
+            self.dlog(&format!("cannot set stream title: {e}"));
+        }
         let result = self.player.as_ref().map(|p| {
             p.load(url)?;
             // A pause would carry over to the new stream.
@@ -1175,6 +1182,13 @@ impl App {
         self.selected = Some(idx);
         self.pending_play = Some(idx);
         self.scroll_to = Some(idx);
+    }
+
+    /// Closes the window like its close button: the only way out in Steam
+    /// Deck's Game Mode, which shows no window decorations.
+    fn quit(&mut self, ctx: &egui::Context) {
+        self.dlog("quit");
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
 
     fn toggle_mute(&mut self, now: f64) {
@@ -1436,6 +1450,9 @@ impl App {
             } else if pressed(egui::Key::Num0) {
                 self.set_scale(100, time);
             }
+            if pressed(egui::Key::Q) {
+                self.quit(ctx);
+            }
             if pressed(egui::Key::Num0) {
                 return;
             }
@@ -1463,7 +1480,6 @@ impl App {
         if pressed(egui::Key::Backspace) && !self.digits.back(time) {
             self.go_back();
         }
-        // Esc cancels typing, then closes the guide, then leaves fullscreen.
         // Esc cancels typing, then leaves the list or the guide, then fullscreen.
         if pressed(egui::Key::Escape)
             && !self.digits.cancel()
@@ -1897,6 +1913,7 @@ impl App {
                     self.settings = Some(draft);
                 }
                 Action::Reload => self.start_load(ctx, Fetch::Download, Fetch::Download),
+                Action::Quit => self.quit(ctx),
                 Action::PlayArchive { channel, start } => {
                     self.play_archive(channel, start, unix_now(), time);
                 }
@@ -3401,6 +3418,56 @@ mod tests {
             });
         }
         (double, drag)
+    }
+
+    /// Runs `handle_shortcuts` for one frame with `key` pressed; returns
+    /// whether the window was asked to close.
+    fn key_closes_window(app: &mut App, key: egui::Key, modifiers: egui::Modifiers) -> bool {
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            }],
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| app.handle_shortcuts(ui.ctx()));
+        output.textures_delta.clear();
+        output.viewport_output.values().any(|v| {
+            v.commands
+                .iter()
+                .any(|c| matches!(c, egui::ViewportCommand::Close))
+        })
+    }
+
+    #[test]
+    fn quit_icon_is_in_the_default_fonts() {
+        let ctx = egui::Context::default();
+        ctx.run_ui(egui::RawInput::default(), |_| {})
+            .textures_delta
+            .clear();
+        let font = egui::FontId::proportional(14.0);
+        assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, QUIT_ICON)));
+    }
+
+    #[test]
+    fn ctrl_q_quits() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+        assert!(key_closes_window(
+            &mut app,
+            egui::Key::Q,
+            egui::Modifiers::COMMAND
+        ));
+        // Plain Q is not a shortcut for quitting.
+        assert!(!key_closes_window(
+            &mut app,
+            egui::Key::Q,
+            egui::Modifiers::NONE
+        ));
     }
 
     fn button(x: f32, pressed: bool) -> egui::Event {
