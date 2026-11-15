@@ -270,7 +270,12 @@ impl App {
         let Some((text, until)) = &self.osd else {
             // No message: remind why a playing channel is silent (unless
             // a channel number is being typed in this corner).
-            let note = silence_note(self.muted, self.volume, self.audio_disabled);
+            let note = silence_note(
+                self.muted,
+                self.system_muted,
+                self.volume,
+                self.audio_disabled,
+            );
             let free = self.playing.is_some() && self.digits.text().is_none();
             if let Some(note) = note.filter(|_| free) {
                 let corner = rect.right_top() + egui::vec2(-16.0, 16.0);

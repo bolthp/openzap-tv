@@ -85,6 +85,8 @@ const ON_TOP_UNAVAILABLE: &str = "Wayland: use the window menu (Alt+Space) for A
 
 /// How often the audio track list is re-read while the bar is up, seconds.
 const TRACKS_REFRESH_SECS: f64 = 1.0;
+/// How often the system mixer's mute of our stream is read, seconds.
+const SYSTEM_MUTE_CHECK_SECS: f64 = 1.0;
 
 /// Finds a programme boundary from a moment (see [`timeshift`]).
 type Find = fn(&[&Programme], i64) -> Option<i64>;
@@ -370,6 +372,9 @@ pub struct App {
     actions: Vec<Action>,
     stream: StreamState,
     muted: bool,
+    /// The system mixer mutes our audio stream (mpv's `ao-mute`).
+    system_muted: bool,
+    system_mute_checked_at: Option<f64>,
     /// The bottom bar (guide and controls).
     bar: BarState,
     /// Audio tracks of the current stream.
@@ -509,6 +514,8 @@ impl App {
             reload_epg: false,
             audio_errors: ErrorBurst::default(),
             audio_disabled: false,
+            system_muted: false,
+            system_mute_checked_at: None,
             http_error: None,
             failure: None,
             status: String::new(),
@@ -1171,9 +1178,18 @@ impl App {
     }
 
     fn toggle_mute(&mut self, now: f64) {
+        if self.system_muted && !self.muted {
+            // Only the system mixer mutes: M lifts that instead of muting.
+            self.lift_system_mute();
+            self.show_osd("Sound on", now);
+            return;
+        }
         self.muted = !self.muted;
         self.dlog(&format!("mute: {}", self.muted));
         self.apply_volume();
+        if !self.muted && self.system_muted {
+            self.lift_system_mute();
+        }
         let text = if self.muted { "Muted" } else { "Sound on" };
         self.show_osd(text, now);
     }
@@ -1184,6 +1200,42 @@ impl App {
         self.pending_volume = true;
         self.pending_save = true;
         self.osd = Some((format!("Volume {:.0}%", self.volume), now + OSD_SECS));
+    }
+
+    /// Unmutes our stream in the system mixer, which also makes the
+    /// session manager remember it as not muted.
+    fn lift_system_mute(&mut self) {
+        self.dlog("system mute: lifting");
+        match self.player.as_ref().map(|p| p.set_system_mute(false)) {
+            Some(Err(e)) => self.status = format!("Cannot unmute in the system mixer: {e}"),
+            _ => self.system_muted = false,
+        }
+    }
+
+    /// Re-reads the system mixer's mute of our stream, at most once per
+    /// interval. Polled: mpv does not report changes made outside it.
+    fn check_system_mute(&mut self, time: f64) {
+        let due = self
+            .system_mute_checked_at
+            .is_none_or(|t| time - t >= SYSTEM_MUTE_CHECK_SECS);
+        if !due {
+            return;
+        }
+        self.system_mute_checked_at = Some(time);
+        let muted = self.playing.is_some()
+            && self
+                .player
+                .as_ref()
+                .and_then(|p| p.system_muted())
+                .unwrap_or(false);
+        self.set_system_muted(muted);
+    }
+
+    fn set_system_muted(&mut self, muted: bool) {
+        if muted != self.system_muted {
+            self.system_muted = muted;
+            self.dlog(&format!("system mute: {muted}"));
+        }
     }
 
     /// Sends volume and mute state to mpv.
@@ -2115,6 +2167,7 @@ impl eframe::App for App {
         self.poll_player();
         self.update_position(now);
         self.check_stall(ui.input(|i| i.time));
+        self.check_system_mute(ui.input(|i| i.time));
         self.handle_shortcuts(ui.ctx());
         self.update_digits(ui.ctx());
         self.apply_view(ui.ctx());
@@ -2214,9 +2267,16 @@ fn unix_now() -> i64 {
 
 /// Why nothing can be heard right now, for the reminder over the video
 /// (`None`: sound is on).
-fn silence_note(muted: bool, volume: f64, audio_disabled: bool) -> Option<&'static str> {
+fn silence_note(
+    muted: bool,
+    system_muted: bool,
+    volume: f64,
+    audio_disabled: bool,
+) -> Option<&'static str> {
     if muted {
         Some("🔇 Muted (M)")
+    } else if system_muted {
+        Some("🔇 Muted in the system mixer (M)")
     } else if volume <= 0.0 {
         Some("🔇 Volume 0%")
     } else if audio_disabled {
@@ -3671,15 +3731,23 @@ mod tests {
 
     #[test]
     fn silence_note_names_the_reason() {
-        assert_eq!(silence_note(false, 80.0, false), None);
-        assert_eq!(silence_note(true, 80.0, false), Some("🔇 Muted (M)"));
-        assert_eq!(silence_note(false, 0.0, false), Some("🔇 Volume 0%"));
+        assert_eq!(silence_note(false, false, 80.0, false), None);
+        assert_eq!(silence_note(true, false, 80.0, false), Some("🔇 Muted (M)"));
         assert_eq!(
-            silence_note(false, 80.0, true),
+            silence_note(false, true, 80.0, false),
+            Some("🔇 Muted in the system mixer (M)")
+        );
+        assert_eq!(silence_note(false, false, 0.0, false), Some("🔇 Volume 0%"));
+        assert_eq!(
+            silence_note(false, false, 80.0, true),
             Some("🔇 No sound on this channel")
         );
-        // Mute is the first thing to undo.
-        assert_eq!(silence_note(true, 0.0, true), Some("🔇 Muted (M)"));
+        // Mute is the first thing to undo, then the system mixer's.
+        assert_eq!(silence_note(true, true, 0.0, true), Some("🔇 Muted (M)"));
+        assert_eq!(
+            silence_note(false, true, 0.0, true),
+            Some("🔇 Muted in the system mixer (M)")
+        );
     }
 
     #[test]
@@ -3721,6 +3789,38 @@ mod tests {
         assert!(app.pending_volume && app.pending_save);
         app.change_volume(-200.0, 20.0);
         assert_eq!(app.volume, 0.0);
+    }
+
+    #[test]
+    fn mute_key_lifts_the_system_mixer_mute() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+
+        // Muted only by the system mixer: M brings the sound back.
+        app.system_muted = true;
+        app.toggle_mute(10.0);
+        assert!(!app.muted && !app.system_muted);
+        assert_eq!(app.osd, Some(("Sound on".into(), 10.0 + OSD_SECS)));
+
+        // Muted in both places: unmuting in the app clears both.
+        app.toggle_mute(11.0);
+        assert!(app.muted);
+        app.system_muted = true;
+        app.toggle_mute(12.0);
+        assert!(!app.muted && !app.system_muted);
+    }
+
+    #[test]
+    fn system_mute_is_off_when_nothing_plays() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+        app.system_muted = true;
+        app.check_system_mute(5.0);
+        assert!(!app.system_muted);
+        // Not read again before the interval has passed.
+        app.system_muted = true;
+        app.check_system_mute(5.5);
+        assert!(app.system_muted);
     }
 
     fn draft(app: &App) -> SettingsDraft {

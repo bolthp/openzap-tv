@@ -168,6 +168,18 @@ impl AspectMode {
     }
 }
 
+/// The application name audio streams carry in system mixers.
+const AUDIO_CLIENT_NAME: &str = "OpenZap";
+
+/// mpv's text form of a flag property.
+fn parse_flag(value: &str) -> Option<bool> {
+    match value {
+        "yes" => Some(true),
+        "no" => Some(false),
+        _ => None,
+    }
+}
+
 /// Playback options the user can change; applied at creation and live.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlaybackSettings {
@@ -275,6 +287,9 @@ impl Player {
             ("config", "no"),   // ignore user's mpv.conf for predictable behaviour
             ("idle", "yes"),    // stay alive with no file loaded
             ("input-default-bindings", "no"),
+            // Own name in system mixers; with mpv's default ("mpv") the
+            // session manager would apply other mpv players' saved mute.
+            ("audio-client-name", AUDIO_CLIENT_NAME),
         ];
         // Only builds with Lua scripts have these (e.g. not the Flatpak's):
         // without them there is nothing to turn off.
@@ -369,6 +384,18 @@ impl Player {
 
     pub fn set_mute(&self, mute: bool) -> Result<(), PlayerError> {
         self.set_property("mute", if mute { "yes" } else { "no" })
+    }
+
+    /// Mute of the audio stream in the system mixer (`ao-mute`), separate
+    /// from mpv's own `mute`. Fails while there is no audio output.
+    pub fn set_system_mute(&self, mute: bool) -> Result<(), PlayerError> {
+        self.set_property("ao-mute", if mute { "yes" } else { "no" })
+    }
+
+    /// Whether the system mixer mutes the audio stream; `None` while there
+    /// is no audio output or the output cannot tell.
+    pub fn system_muted(&self) -> Option<bool> {
+        parse_flag(self.get_property("ao-mute")?.as_str())
     }
 
     /// Asks mpv to report changes of `name` as [`PlayerEvent::Property`].
@@ -807,6 +834,32 @@ mod tests {
         assert_eq!(next_property(&p, "mute"), Some(PropertyValue::Flag(false)));
         p.set_mute(true).unwrap();
         assert_eq!(next_property(&p, "mute"), Some(PropertyValue::Flag(true)));
+    }
+
+    #[test]
+    fn flags_are_parsed_from_mpv_text() {
+        assert_eq!(parse_flag("yes"), Some(true));
+        assert_eq!(parse_flag("no"), Some(false));
+        assert_eq!(parse_flag(""), None);
+    }
+
+    #[test]
+    fn audio_client_has_its_own_name() {
+        require_mpv!();
+        let p = headless();
+        assert_eq!(
+            p.get_property("audio-client-name").as_deref(),
+            Some(AUDIO_CLIENT_NAME)
+        );
+    }
+
+    #[test]
+    fn system_mute_without_audio_output() {
+        require_mpv!();
+        let p = headless();
+        // Nothing plays: there is no stream in any mixer yet.
+        assert_eq!(p.system_muted(), None);
+        assert!(p.set_system_mute(false).is_err());
     }
 
     #[test]
