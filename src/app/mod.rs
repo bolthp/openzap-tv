@@ -24,6 +24,7 @@ use openzap::epg::{Epg, EpgChannel, Programme};
 use openzap::guide::GuideIndex;
 use openzap::loader::{self, Fetch, Fetched, LoadEvent};
 use openzap::m3u::{Channel, Playlist};
+use openzap::pad;
 use openzap::platform;
 use openzap::player::{AspectMode, Player, PlayerEvent, PropertyKind, PropertyValue};
 use openzap::timeshift::{self, Position, Target};
@@ -31,6 +32,7 @@ use openzap::tracks::{self, Track};
 use openzap::{cache, catchup, clock};
 
 use crate::filepick::{self, Pick, PickState, PickTarget};
+use crate::gamepad::{self, Gamepads, Report};
 use crate::settings::{self, Outcome, SettingsDraft};
 use crate::video::VideoView;
 use list::ListOverlay;
@@ -352,6 +354,9 @@ pub struct App {
     file_pick: Option<(Pick, f64)>,
     /// Use the built-in file browser (no system dialog, e.g. Game Mode).
     builtin_browser: bool,
+    gamepads: Option<Gamepads>,
+    /// Gamepad commands that are not keys, applied in the next frame.
+    pad_commands: Vec<pad::Command>,
     playing: Option<usize>,
     /// Set while `playing` (or the stream last started) is from the archive.
     archive: Option<Position>,
@@ -575,6 +580,8 @@ impl App {
             settings: None,
             file_pick: None,
             builtin_browser: false,
+            gamepads: None,
+            pad_commands: Vec::new(),
         }
     }
 
@@ -854,6 +861,7 @@ impl App {
         // Ctrl +/- would change it behind the setting's back.
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
         self.logos = Some(Logos::new(&ctx));
+        self.gamepads = Some(Gamepads::start(&ctx));
         self.ctx = ctx;
     }
 
@@ -1188,6 +1196,19 @@ impl App {
         self.selected = Some(idx);
         self.pending_play = Some(idx);
         self.scroll_to = Some(idx);
+    }
+
+    /// Gamepad volume and quit (its other buttons are keys).
+    fn apply_pad_commands(&mut self, ctx: &egui::Context) {
+        let time = ctx.input(|i| i.time);
+        for command in std::mem::take(&mut self.pad_commands) {
+            match command {
+                pad::Command::VolumeUp => self.change_volume(VOLUME_STEP, time),
+                pad::Command::VolumeDown => self.change_volume(-VOLUME_STEP, time),
+                pad::Command::Quit => self.quit(ctx, "gamepad"),
+                pad::Command::Key { .. } => {}
+            }
+        }
     }
 
     /// Closes the window like its close button: the only way out in Steam
@@ -2184,6 +2205,26 @@ impl eframe::App for App {
         self.release_player();
     }
 
+    /// Gamepad buttons arrive as key presses, so everything that works
+    /// with the keyboard works with a gamepad.
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        let reports = self
+            .gamepads
+            .as_ref()
+            .map(Gamepads::take)
+            .unwrap_or_default();
+        for report in reports {
+            match report {
+                Report::Note(line) => self.dlog(&line),
+                Report::Command(pad::Command::Key { key, repeat }) => {
+                    let events = gamepad::key_events(gamepad::egui_key(key), repeat);
+                    raw_input.events.extend(events);
+                }
+                Report::Command(other) => self.pad_commands.push(other),
+            }
+        }
+    }
+
     /// eframe stores only the window size and position (`persistence`
     /// feature); widget state is not worth keeping between runs.
     fn persist_egui_memory(&self) -> bool {
@@ -2206,6 +2247,7 @@ impl eframe::App for App {
         self.check_stall(ui.input(|i| i.time));
         self.check_system_mute(ui.input(|i| i.time));
         self.handle_shortcuts(ui.ctx());
+        self.apply_pad_commands(ui.ctx());
         self.update_digits(ui.ctx());
         self.apply_view(ui.ctx());
         let fullscreen = is_fullscreen(ui.ctx());

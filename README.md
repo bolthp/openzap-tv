@@ -73,7 +73,7 @@ flatpak uninstall --user io.github.bolthp.OpenZap
 
 ### Linux: tar.gz
 
-libmpv must be installed:
+libmpv must be installed (libudev too, which every common distribution has):
 
 ```sh
 sudo apt install libmpv2      # Debian/Ubuntu (libmpv1 on older releases)
@@ -175,6 +175,29 @@ slides it in over the video; it slides away when the mouse leaves it, unless
 pinned with `L` or the list button.
 In a window, drag the video (or any empty spot) to move the window.
 
+### Gamepad
+
+A gamepad works like the keys above (Xbox button names; the Steam Deck's
+buttons are in the same places):
+
+| Button | Action |
+|---|---|
+| D-pad / left stick | arrow keys (held: repeats) |
+| A | `Enter` |
+| B | `Esc` |
+| X | mute |
+| Y | programme guide (`G`) |
+| LB / RB | previous / next channel |
+| LT / RT | volume down / up (held: repeats) |
+| View (⧉) | channel list (`L`) |
+| Menu (☰) | info (`I`) |
+| View + Menu together | quit |
+
+**Steam Deck:** in Game Mode, keep the controller layout of the OpenZap
+shortcut at Steam's default *Gamepad* template; a keyboard template (such as
+"WASD") sends letters instead, which are shortcuts here. The Flatpak reads
+gamepads with Flatpak 1.15.6 or newer.
+
 Channels with an archive (catch-up) show `⏪` and its depth in days in the
 list. In the guide (`G`), click a past programme and then **Watch**. While a
 channel plays, the arrow keys, `Home`, the bar's buttons or a click on the
@@ -212,7 +235,8 @@ server host names — look through it before sharing.
 
 ## Build from source
 
-Requires a stable Rust toolchain. libmpv is loaded at run time, so it is
+Requires a stable Rust toolchain, and on Linux libudev for gamepads
+(`sudo apt install libudev-dev`). libmpv is loaded at run time, so it is
 not needed to build, only to run (and to run the playback tests).
 
 ```sh

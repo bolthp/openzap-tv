@@ -17,6 +17,8 @@ finish-args:
   - --socket=pulseaudio
   # OpenGL and hardware video decoding (VA-API).
   - --device=dri
+  # Gamepads (/dev/input; Flatpak 1.15.6 and newer).
+  - --device=input
   # Playlists and guides typed in as paths; "Browse…" goes through the
   # file chooser portal and works without this.
   - --filesystem=home:ro

@@ -3,6 +3,7 @@
 
 mod app;
 mod filepick;
+mod gamepad;
 mod settings;
 mod video;
 

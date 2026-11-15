@@ -15,6 +15,7 @@ pub mod loader;
 pub mod logos;
 pub mod m3u;
 pub mod mask;
+pub mod pad;
 pub mod platform;
 pub mod player;
 pub mod source;

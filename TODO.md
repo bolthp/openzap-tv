@@ -86,14 +86,12 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
       shows the variables). Works on the Deck: fits the screen, no leftover
       processes, Steam returns to the library at once. Not yet tried there:
       "All files" and moving through the list with the D-pad.
-- [ ] Gamepad control: the Deck's controls do nothing without a Steam Input
-      layout, and the "WASD" template sends letters that are shortcuts
-      here (M mutes, A switches the audio track). Steam Input can map the Deck's controls to
-      keys (D-pad → arrows, A → Enter, B → Esc, shoulder buttons → PageUp/
-      PageDown): the keyboard-only UI covers that. Native support
-      next, e.g. with the `gilrs` crate (reads controllers without SDL):
-      D-pad moves through the list, A plays, B goes back, shoulder buttons
-      switch groups, triggers change volume.
+- [ ] Gamepad control (0.6.0): `gilrs` on a thread, buttons become the
+      existing keys (src/pad.rs: D-pad/stick arrows, A Enter, B Esc, X mute,
+      Y guide, LB/RB channels, LT/RT volume, View list, Menu info, View+Menu
+      quit). Check on the Deck with Steam's default Gamepad template; the
+      Flatpak needs `--device=input`. Not yet: the settings dialog with a
+      pad (touch works), "All files" in the file browser.
 - [ ] "TV" layout for small screens / couch distance: the interface scale
       (settings, `Ctrl` + `+`/`-`/`0`, 75–200 %) makes text and rows larger;
       try 150 % on the Deck. Maybe choose a larger scale by itself in Game
