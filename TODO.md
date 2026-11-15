@@ -86,12 +86,13 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
       shows the variables). Works on the Deck: fits the screen, no leftover
       processes, Steam returns to the library at once. Not yet tried there:
       "All files" and moving through the list with the D-pad.
-- [ ] Gamepad control (0.6.0): `gilrs` on a thread, buttons become the
-      existing keys (src/pad.rs: D-pad/stick arrows, A Enter, B Esc, X mute,
-      Y guide, LB/RB channels, LT/RT volume, View list, Menu info, View+Menu
-      quit). Check on the Deck with Steam's default Gamepad template; the
-      Flatpak needs `--device=input`. Not yet: the settings dialog with a
-      pad (touch works), "All files" in the file browser.
+- [x] Gamepad control (0.6.0): `gilrs` on a thread, buttons become the
+      existing keys (src/pad.rs). Works on the Deck with Steam's Gamepad
+      template ("Steam Virtual Gamepad", SDL mapping), also when the layout
+      is switched while running; all buttons, the file browser and
+      View + Menu quit confirmed. Holding ↓ on the video opened 10 streams
+      a second: switches in quick succession now play only where they stop.
+- [ ] Settings dialog with a gamepad (touch works on the Deck).
 - [ ] "TV" layout for small screens / couch distance: the interface scale
       (settings, `Ctrl` + `+`/`-`/`0`, 75–200 %) makes text and rows larger;
       try 150 % on the Deck. Maybe choose a larger scale by itself in Game

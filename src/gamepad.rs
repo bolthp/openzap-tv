@@ -57,6 +57,12 @@ fn run(tx: &Sender<Report>, ctx: &egui::Context) {
             return;
         }
     };
+    if gilrs.gamepads().next().is_none() {
+        // Pads connected later are reported then.
+        if !send(Report::Note("gamepad: none connected yet".into())) {
+            return;
+        }
+    }
     for (_, gamepad) in gilrs.gamepads() {
         let line = format!(
             "gamepad: {} (mapping: {:?})",

@@ -88,6 +88,20 @@ const ON_TOP_UNAVAILABLE: &str = "Wayland: use the window menu (Alt+Space) for A
 
 /// How often the audio track list is re-read while the bar is up, seconds.
 const TRACKS_REFRESH_SECS: f64 = 1.0;
+/// Channel switches closer together than this count as one run: only the
+/// first and the last channel of the run are played, seconds.
+const ZAP_SETTLE_SECS: f64 = 0.4;
+
+/// A run of quick channel switches.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Zap {
+    /// The channel played when the run began.
+    started: usize,
+    /// The channel reached so far.
+    target: usize,
+    /// When the run ends unless another switch comes (input time).
+    until: f64,
+}
 /// The quit button's label; must be in egui's built-in fonts.
 const QUIT_ICON: &str = "🚪";
 /// How often the system mixer's mute of our stream is read, seconds.
@@ -355,6 +369,7 @@ pub struct App {
     /// Use the built-in file browser (no system dialog, e.g. Game Mode).
     builtin_browser: bool,
     gamepads: Option<Gamepads>,
+    zap: Option<Zap>,
     /// Gamepad commands that are not keys, applied in the next frame.
     pad_commands: Vec<pad::Command>,
     playing: Option<usize>,
@@ -581,6 +596,7 @@ impl App {
             file_pick: None,
             builtin_browser: false,
             gamepads: None,
+            zap: None,
             pad_commands: Vec::new(),
         }
     }
@@ -1182,11 +1198,16 @@ impl App {
 
     /// Plays the next (`delta` = 1) or previous (-1) channel of the visible
     /// list, wrapping around. Starts from the playing or selected channel.
-    fn switch_channel(&mut self, delta: isize) {
+    /// Previous / next channel. The first press plays at once; presses
+    /// that follow quickly (a held key or D-pad) only move on, and the
+    /// channel reached plays when they stop, instead of opening every
+    /// stream on the way.
+    fn switch_channel(&mut self, delta: isize, time: f64) {
         if self.visible.is_empty() {
             return;
         }
-        let current = self.playing.or(self.selected);
+        let zapping = self.zap.filter(|z| time < z.until);
+        let current = zapping.map(|z| z.target).or(self.playing).or(self.selected);
         let pos = current.and_then(|c| self.visible.iter().position(|&i| i == c));
         let next = match pos {
             Some(p) => (p as isize + delta).rem_euclid(self.visible.len() as isize) as usize,
@@ -1194,8 +1215,43 @@ impl App {
         };
         let idx = self.visible[next];
         self.selected = Some(idx);
-        self.pending_play = Some(idx);
         self.scroll_to = Some(idx);
+        let until = time + ZAP_SETTLE_SECS;
+        match zapping {
+            Some(z) => {
+                self.zap = Some(Zap {
+                    target: idx,
+                    until,
+                    ..z
+                });
+                let name = &self.playlist.channels[idx].name;
+                let number = self.numbers.get(idx).copied().unwrap_or(0);
+                self.show_osd(format!("{number}  {name}"), time);
+            }
+            None => {
+                self.pending_play = Some(idx);
+                self.zap = Some(Zap {
+                    target: idx,
+                    started: idx,
+                    until,
+                });
+            }
+        }
+    }
+
+    /// Plays the channel a quick run of switches stopped at.
+    fn update_zap(&mut self, ctx: &egui::Context, time: f64) {
+        let Some(zap) = self.zap else {
+            return;
+        };
+        if time < zap.until {
+            ctx.request_repaint_after(Duration::from_secs_f64(zap.until - time));
+            return;
+        }
+        self.zap = None;
+        if zap.target != zap.started {
+            self.pending_play = Some(zap.target);
+        }
     }
 
     /// Gamepad volume and quit (its other buttons are keys).
@@ -1552,7 +1608,7 @@ impl App {
         if up || down {
             let delta = if up { -1 } else { 1 };
             match self.focus {
-                Focus::Video => self.switch_channel(delta),
+                Focus::Video => self.switch_channel(delta, time),
                 Focus::List => self.move_selection(delta),
                 Focus::Guide => self.schedule_cursor(delta, unix_now()),
             }
@@ -1590,10 +1646,10 @@ impl App {
             self.actions.push(Action::BackToLive);
         }
         if pressed(egui::Key::PageUp) {
-            self.switch_channel(-1);
+            self.switch_channel(-1, time);
         }
         if pressed(egui::Key::PageDown) {
-            self.switch_channel(1);
+            self.switch_channel(1, time);
         }
     }
 
@@ -1930,7 +1986,10 @@ impl App {
         for action in std::mem::take(&mut self.actions) {
             match action {
                 Action::Stop => self.stop(),
-                Action::ToggleMute => self.toggle_mute(time),
+                Action::ToggleMute => {
+                    self.dlog("mute button");
+                    self.toggle_mute(time);
+                }
                 Action::ToggleFavorite(idx) => self.toggle_favorite(idx),
                 Action::ToggleList => self.toggle_list(time),
                 Action::SwapListSide => {
@@ -2217,10 +2276,16 @@ impl eframe::App for App {
             match report {
                 Report::Note(line) => self.dlog(&line),
                 Report::Command(pad::Command::Key { key, repeat }) => {
+                    // Also while a dialog has the keys (no `keys:` line then).
+                    let held = if repeat { " (held)" } else { "" };
+                    self.dlog(&format!("pad: {key:?}{held}"));
                     let events = gamepad::key_events(gamepad::egui_key(key), repeat);
                     raw_input.events.extend(events);
                 }
-                Report::Command(other) => self.pad_commands.push(other),
+                Report::Command(other) => {
+                    self.dlog(&format!("pad: {other:?}"));
+                    self.pad_commands.push(other);
+                }
             }
         }
     }
@@ -2248,6 +2313,7 @@ impl eframe::App for App {
         self.check_system_mute(ui.input(|i| i.time));
         self.handle_shortcuts(ui.ctx());
         self.apply_pad_commands(ui.ctx());
+        self.update_zap(ui.ctx(), ui.input(|i| i.time));
         self.update_digits(ui.ctx());
         self.apply_view(ui.ctx());
         let fullscreen = is_fullscreen(ui.ctx());
@@ -3164,16 +3230,63 @@ mod tests {
         let (playlist, epg) = demo_data(0);
         let mut app = App::new(playlist, epg, vec![]);
 
-        app.switch_channel(1); // nothing selected: start at the first
+        app.switch_channel(1, 0.0); // nothing selected: start at the first
         assert_eq!(app.pending_play, Some(0));
 
         app.playing = Some(2);
-        app.switch_channel(1); // last -> first
+        app.switch_channel(1, 10.0); // last -> first
         assert_eq!((app.selected, app.pending_play), (Some(0), Some(0)));
 
         app.playing = Some(0);
-        app.switch_channel(-1); // first -> last
+        app.switch_channel(-1, 20.0); // first -> last
         assert_eq!(app.pending_play, Some(2));
+    }
+
+    #[test]
+    fn held_switching_plays_only_where_it_stops() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+        let ctx = egui::Context::default();
+        app.playing = Some(0);
+        // The first press plays at once.
+        app.switch_channel(1, 10.0);
+        assert_eq!(app.pending_play.take(), Some(1));
+        app.playing = Some(1);
+        // Repeats 0.1 s apart only move on.
+        app.switch_channel(1, 10.1);
+        app.switch_channel(1, 10.2);
+        assert_eq!(app.pending_play, None);
+        assert_eq!(app.selected, Some(0), "wrapped: 1 -> 2 -> 0");
+        assert!(
+            app.osd
+                .as_ref()
+                .is_some_and(|(t, _)| t.contains("Example News"))
+        );
+        app.update_zap(&ctx, 10.3);
+        assert_eq!(app.pending_play, None, "still switching");
+        // When they stop, the channel reached plays.
+        app.update_zap(&ctx, 10.2 + ZAP_SETTLE_SECS);
+        assert_eq!(app.pending_play.take(), Some(0));
+        assert!(app.zap.is_none());
+        // A later press plays at once again.
+        app.playing = Some(0);
+        app.switch_channel(1, 20.0);
+        assert_eq!(app.pending_play, Some(1));
+    }
+
+    #[test]
+    fn switching_back_to_the_start_plays_nothing_more() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+        let ctx = egui::Context::default();
+        app.playing = Some(0);
+        app.switch_channel(1, 0.0);
+        app.pending_play = None;
+        app.playing = Some(1);
+        app.switch_channel(-1, 0.1);
+        app.switch_channel(1, 0.2);
+        app.update_zap(&ctx, 1.0);
+        assert_eq!(app.pending_play, None, "back where the run began");
     }
 
     #[test]
@@ -3183,12 +3296,12 @@ mod tests {
         app.query = "film".into();
         app.refilter(); // only index 1 visible
         app.playing = Some(1);
-        app.switch_channel(1);
+        app.switch_channel(1, 0.0);
         assert_eq!(app.pending_play, Some(1));
 
         app.visible.clear();
         app.pending_play = None;
-        app.switch_channel(1);
+        app.switch_channel(1, 10.0);
         assert_eq!(app.pending_play, None);
     }
 
@@ -3897,7 +4010,7 @@ mod tests {
         let (playlist, epg) = demo_data(0);
         let mut app = App::new(playlist, epg, vec![]);
         app.playing = Some(0);
-        app.switch_channel(1);
+        app.switch_channel(1, 0.0);
         assert_eq!(app.scroll_to, Some(1));
     }
 
