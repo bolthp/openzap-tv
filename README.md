@@ -120,6 +120,12 @@ The Flatpak keeps all of this in `~/.var/app/io.github.bolthp.OpenZap/`
 settings of the tar.gz build, if there are any. It can read files in your home
 folder; choose files elsewhere with **Browse…**.
 
+In Steam Deck's Game Mode the system cannot show an "Open file" dialog, so
+**Browse…** opens OpenZap's own file browser there (touch, or arrow keys,
+`Enter`, `Backspace` for the folder above, `Esc`). It only sees the home
+folder in the Flatpak. `OPENZAP_FILE_BROWSER=builtin` or `=system` chooses
+the browser on any system.
+
 ## Keyboard
 
 | Key | Action |

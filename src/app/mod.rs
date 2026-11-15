@@ -18,6 +18,7 @@ use openzap::browse::{Filter, channel_numbers, filter_channels, find_number, gro
 use openzap::catchup::Catchup;
 use openzap::config::{self, Config, Side, Theme};
 use openzap::debuglog::DebugLog;
+use openzap::desktop;
 use openzap::diagnose::{self, ErrorBurst};
 use openzap::epg::{Epg, EpgChannel, Programme};
 use openzap::guide::GuideIndex;
@@ -347,7 +348,10 @@ pub struct App {
     /// The settings dialog, while open.
     settings: Option<SettingsDraft>,
     /// A file dialog opened from the settings, while open.
-    file_pick: Option<Pick>,
+    /// An open file dialog and when it was opened (input time).
+    file_pick: Option<(Pick, f64)>,
+    /// Use the built-in file browser (no system dialog, e.g. Game Mode).
+    builtin_browser: bool,
     playing: Option<usize>,
     /// Set while `playing` (or the stream last started) is from the archive.
     archive: Option<Position>,
@@ -479,6 +483,7 @@ impl App {
         app.on_top_supported = platform::can_keep_on_top(platform::is_wayland());
         app.autoload = !playlist_input.is_empty();
         app.cache_root = cache::default_root();
+        app.builtin_browser = desktop::builtin_file_browser(|name| std::env::var(name).ok());
         app.resume_on_load = config.resume_last;
         // First start: nothing to show yet, so ask for a playlist right away.
         if playlist_input.is_empty() {
@@ -569,6 +574,7 @@ impl App {
             log: None,
             settings: None,
             file_pick: None,
+            builtin_browser: false,
         }
     }
 
@@ -1186,8 +1192,8 @@ impl App {
 
     /// Closes the window like its close button: the only way out in Steam
     /// Deck's Game Mode, which shows no window decorations.
-    fn quit(&mut self, ctx: &egui::Context) {
-        self.dlog("quit");
+    fn quit(&mut self, ctx: &egui::Context, source: &str) {
+        self.dlog(&format!("quit: {source}"));
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
 
@@ -1451,7 +1457,7 @@ impl App {
                 self.set_scale(100, time);
             }
             if pressed(egui::Key::Q) {
-                self.quit(ctx);
+                self.quit(ctx, "Ctrl+Q");
             }
             if pressed(egui::Key::Num0) {
                 return;
@@ -1595,6 +1601,7 @@ impl App {
             self.file_pick = None; // settings closed meanwhile: drop the result
             return;
         };
+        let time = ctx.input(|i| i.time);
         if let Some(target) = draft.pick_request.take()
             && self.file_pick.is_none()
         {
@@ -1602,23 +1609,36 @@ impl App {
                 PickTarget::Playlist => &draft.playlist,
                 PickTarget::Epg => &draft.epg,
             };
-            self.file_pick = Some(filepick::open(target, current, ctx));
+            let pick = filepick::open(target, current, self.builtin_browser, ctx);
+            let line = format!("file dialog ({}): {target:?}", pick.kind());
+            self.file_pick = Some((pick, time));
+            self.dlog(&line);
         }
-        if let Some(pick) = &self.file_pick {
-            match pick.poll() {
+        let mut chosen = None;
+        let mut line = None;
+        if let Some((pick, opened)) = &mut self.file_pick {
+            let secs = time - *opened;
+            match pick.poll(ctx) {
                 PickState::Open => {}
                 PickState::Chosen(path) => {
-                    let path = path.to_string_lossy().into_owned();
-                    match pick.target {
-                        PickTarget::Playlist => draft.playlist = path,
-                        PickTarget::Epg => draft.epg = path,
-                    }
-                    self.file_pick = None;
+                    line = Some(format!("file dialog: chosen after {secs:.1} s"));
+                    chosen = Some((pick.target, path.to_string_lossy().into_owned()));
                 }
-                PickState::Cancelled => self.file_pick = None,
+                PickState::Cancelled => {
+                    line = Some(format!("file dialog: closed after {secs:.1} s"));
+                }
             }
         }
+        if let Some(line) = line {
+            self.dlog(&line);
+            self.file_pick = None;
+        }
         if let Some(draft) = &mut self.settings {
+            match chosen {
+                Some((PickTarget::Playlist, path)) => draft.playlist = path,
+                Some((PickTarget::Epg, path)) => draft.epg = path,
+                None => {}
+            }
             draft.picking = self.file_pick.is_some();
         }
     }
@@ -1913,7 +1933,7 @@ impl App {
                     self.settings = Some(draft);
                 }
                 Action::Reload => self.start_load(ctx, Fetch::Download, Fetch::Download),
-                Action::Quit => self.quit(ctx),
+                Action::Quit => self.quit(ctx, "button"),
                 Action::PlayArchive { channel, start } => {
                     self.play_archive(channel, start, unix_now(), time);
                 }
@@ -2220,7 +2240,6 @@ impl eframe::App for App {
         }
         self.schedule_panel(ui.ctx(), screen, now);
         let ctx = ui.ctx().clone();
-        self.update_file_pick(&ctx);
         self.update_cache_request();
         if let Some(draft) = &mut self.settings
             && let Some(outcome) = settings::show(&ctx, draft)
@@ -2235,6 +2254,8 @@ impl eframe::App for App {
                 self.reload_epg = false;
             }
         }
+        // After the settings, so the built-in browser is drawn over them.
+        self.update_file_pick(&ctx);
         if let Some(idx) = self.pending_play.take() {
             self.play(idx);
         }
@@ -3509,12 +3530,100 @@ mod tests {
     }
 
     #[test]
+    fn game_mode_opens_the_built_in_browser() {
+        let mut app = App::new(Playlist::default(), Epg::default(), vec![]);
+        let ctx = egui::Context::default();
+        app.builtin_browser = true;
+        let mut d = draft(&app);
+        d.pick_request = Some(PickTarget::Playlist);
+        app.settings = Some(d);
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            app.update_file_pick(ui.ctx())
+        })
+        .textures_delta
+        .clear();
+        let (pick, _) = app.file_pick.as_ref().expect("a dialog is open");
+        assert_eq!(pick.kind(), "built-in");
+        assert!(app.settings.as_ref().unwrap().picking);
+    }
+
+    /// One frame of the settings dialog and the file dialog, drawn in the
+    /// app's order, with `keys` pressed.
+    fn settings_frame(app: &mut App, ctx: &egui::Context, keys: &[egui::Key]) {
+        let events = keys
+            .iter()
+            .map(|&key| egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            })
+            .collect();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        ctx.run_ui(input, |ui| {
+            if let Some(draft) = &mut app.settings
+                && settings::show(ui.ctx(), draft).is_some()
+            {
+                app.settings = None;
+            }
+            app.update_file_pick(ui.ctx());
+        })
+        .textures_delta
+        .clear();
+    }
+
+    #[test]
+    fn built_in_browser_takes_the_keys_from_the_settings() {
+        let dir = std::env::temp_dir().join(format!("openzap-app-browse-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("list.m3u"), "").unwrap();
+        let mut app = App::new(Playlist::default(), Epg::default(), vec![]);
+        app.builtin_browser = true;
+        let mut d = draft(&app);
+        // The browser starts in the folder of the current value.
+        d.playlist = dir.join("old.m3u").to_string_lossy().into_owned();
+        d.pick_request = Some(PickTarget::Playlist);
+        app.settings = Some(d);
+        let ctx = egui::Context::default();
+        settings_frame(&mut app, &ctx, &[]);
+        settings_frame(&mut app, &ctx, &[]);
+        assert!(app.file_pick.is_some());
+
+        // Esc closes the browser only; the next Esc the settings.
+        settings_frame(&mut app, &ctx, &[egui::Key::Escape]);
+        assert!(app.file_pick.is_none(), "browser closed");
+        assert!(app.settings.is_some(), "settings stay open");
+
+        // Down to the file, Enter takes it into the field.
+        app.settings.as_mut().unwrap().pick_request = Some(PickTarget::Playlist);
+        settings_frame(&mut app, &ctx, &[]);
+        settings_frame(&mut app, &ctx, &[egui::Key::ArrowDown]);
+        settings_frame(&mut app, &ctx, &[egui::Key::Enter]);
+        assert!(app.file_pick.is_none());
+        let d = app.settings.as_ref().expect("settings stay open");
+        assert_eq!(d.playlist, dir.join("list.m3u").to_string_lossy());
+
+        settings_frame(&mut app, &ctx, &[egui::Key::Escape]);
+        assert!(app.settings.is_none(), "now Esc closes the settings");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn chosen_file_goes_into_its_settings_field() {
         let mut app = App::new(Playlist::default(), Epg::default(), vec![]);
         let ctx = egui::Context::default();
         app.settings = Some(draft(&app));
         let (tx, rx) = std::sync::mpsc::channel();
-        app.file_pick = Some(Pick::from_receiver(PickTarget::Epg, rx));
+        app.file_pick = Some((Pick::from_receiver(PickTarget::Epg, rx), 0.0));
 
         app.update_file_pick(&ctx);
         assert!(app.settings.as_ref().unwrap().picking);
@@ -3552,7 +3661,7 @@ mod tests {
     fn closing_settings_drops_the_dialog_result() {
         let mut app = App::new(Playlist::default(), Epg::default(), vec![]);
         let (_tx, rx) = std::sync::mpsc::channel();
-        app.file_pick = Some(Pick::from_receiver(PickTarget::Playlist, rx));
+        app.file_pick = Some((Pick::from_receiver(PickTarget::Playlist, rx), 0.0));
         app.update_file_pick(&egui::Context::default());
         assert!(app.file_pick.is_none());
     }

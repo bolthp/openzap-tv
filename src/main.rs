@@ -29,6 +29,21 @@ fn logged_args(args: &[String]) -> Vec<String> {
     args.iter().map(|a| mask_urls_in_text(a)).collect()
 }
 
+/// The session's kind for the debug log: the variables that tell a
+/// desktop from Steam Deck's Game Mode, and which file dialog is used.
+fn session_line(env: impl Fn(&str) -> Option<String>) -> String {
+    let vars: Vec<String> = openzap::desktop::SESSION_VARS
+        .iter()
+        .filter_map(|name| env(name).map(|v| format!("{name}={v}")))
+        .collect();
+    let dialog = if openzap::desktop::builtin_file_browser(&env) {
+        "built-in"
+    } else {
+        "system"
+    };
+    format!("session: {} -> file dialog: {dialog}", vars.join(" "))
+}
+
 /// Opens the debug log next to the executable (the portable folder), or
 /// in the settings directory, or in the temp directory, whichever works.
 fn open_debug_log() -> Option<Arc<DebugLog>> {
@@ -65,6 +80,7 @@ fn main() -> eframe::Result {
             std::env::consts::ARCH,
             given
         ));
+        log.line(&session_line(|name| std::env::var(name).ok()));
         let panic_log = Arc::clone(log);
         let default_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
@@ -138,6 +154,16 @@ fn install_desktop_entry(log: Option<&DebugLog>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_line_names_the_variables_and_the_dialog() {
+        let env = |name: &str| (name == "XDG_CURRENT_DESKTOP").then(|| "gamescope".to_string());
+        assert_eq!(
+            session_line(env),
+            "session: XDG_CURRENT_DESKTOP=gamescope -> file dialog: built-in"
+        );
+        assert_eq!(session_line(|_| None), "session:  -> file dialog: system");
+    }
 
     #[test]
     fn logged_args_keep_the_flag_and_hide_keys() {

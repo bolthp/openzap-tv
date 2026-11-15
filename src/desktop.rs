@@ -19,6 +19,34 @@ pub fn flatpak_id(env: impl Fn(&str) -> Option<String>) -> Option<String> {
     env("FLATPAK_ID").filter(|id| !id.trim().is_empty())
 }
 
+/// Environment variables that tell what kind of session this is, for
+/// the debug log.
+pub const SESSION_VARS: [&str; 6] = [
+    "XDG_CURRENT_DESKTOP",
+    "XDG_SESSION_DESKTOP",
+    "GAMESCOPE_WAYLAND_DISPLAY",
+    "SteamDeck",
+    "SteamGamepadUI",
+    "OPENZAP_FILE_BROWSER",
+];
+
+/// Whether the system's "Open file" dialog is unusable and the built-in
+/// file browser should be used instead: in Steam Deck's Game Mode
+/// (gamescope session) no portal backend shows one. `OPENZAP_FILE_BROWSER`
+/// set to `builtin` or `system` overrides the guess.
+pub fn builtin_file_browser(env: impl Fn(&str) -> Option<String>) -> bool {
+    match env("OPENZAP_FILE_BROWSER").as_deref() {
+        Some("builtin") => return true,
+        Some("system") => return false,
+        _ => {}
+    }
+    let gamescope_desktop = ["XDG_CURRENT_DESKTOP", "XDG_SESSION_DESKTOP"]
+        .iter()
+        .filter_map(|name| env(name))
+        .any(|v| v.to_ascii_lowercase().contains("gamescope"));
+    gamescope_desktop || env("SteamGamepadUI").as_deref() == Some("1")
+}
+
 /// The window's app id: the Flatpak id inside a Flatpak (its exported
 /// `.desktop` file has that name), else [`APP_ID`].
 pub fn app_id(env: impl Fn(&str) -> Option<String>) -> String {
@@ -115,6 +143,43 @@ fn write_if_changed(path: &Path, content: &[u8]) -> io::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn vars(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let pairs: Vec<(String, String)> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        move |name| {
+            pairs
+                .iter()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.clone())
+        }
+    }
+
+    #[test]
+    fn builtin_file_browser_in_game_mode_only() {
+        assert!(builtin_file_browser(vars(&[(
+            "XDG_CURRENT_DESKTOP",
+            "gamescope"
+        )])));
+        assert!(builtin_file_browser(vars(&[("SteamGamepadUI", "1")])));
+        assert!(!builtin_file_browser(vars(&[(
+            "XDG_CURRENT_DESKTOP",
+            "KDE"
+        )])));
+        assert!(!builtin_file_browser(vars(&[("SteamDeck", "1")])));
+        assert!(!builtin_file_browser(vars(&[])));
+        // The override wins both ways.
+        assert!(builtin_file_browser(vars(&[(
+            "OPENZAP_FILE_BROWSER",
+            "builtin"
+        )])));
+        assert!(!builtin_file_browser(vars(&[
+            ("OPENZAP_FILE_BROWSER", "system"),
+            ("XDG_CURRENT_DESKTOP", "gamescope"),
+        ])));
+    }
     use std::collections::HashMap;
 
     #[test]
