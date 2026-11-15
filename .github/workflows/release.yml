@@ -104,7 +104,10 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-26.08
-      options: --privileged
+      # The runtimes on a volume (Docker copies them there): updating them
+      # in the image's own overlay layer fails with "Invalid cross-device
+      # link" on current runners.
+      options: --privileged -v /var/lib/flatpak
     steps:
       - uses: actions/checkout@v7
 
