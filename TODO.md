@@ -78,8 +78,8 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
       0.5.5 uses a built-in file browser there (`XDG_CURRENT_DESKTOP`
       contains gamescope, or `SteamGamepadUI=1`; the `session:` log line
       shows the variables). Works on the Deck: fits the screen, no leftover
-      processes, Steam returns to the library at once. Not yet tried there:
-      "All files" and moving through the list with the D-pad.
+      processes, Steam returns to the library at once; "All files" and moving
+      through the list with the D-pad work too.
 - [x] Gamepad control (0.6.0): `gilrs` on a thread, buttons become the
       existing keys (src/pad.rs). Works on the Deck with Steam's Gamepad
       template ("Steam Virtual Gamepad", SDL mapping), also when the layout
