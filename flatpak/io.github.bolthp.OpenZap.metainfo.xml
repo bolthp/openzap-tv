@@ -40,6 +40,11 @@
     <control>pointing</control>
   </supports>
   <releases>
+    <release version="0.6.1" date="2026-11-17">
+      <description>
+        <p>Proxy support (Settings → Network): HTTP and SOCKS proxies for playlists, guides and logos; streams go through HTTP proxies. Holding a key or the D-pad to switch channels no longer opens every channel on the way, only the one where it stops.</p>
+      </description>
+    </release>
     <release version="0.6.0" date="2026-11-15">
       <description>
         <p>Gamepad support: the D-pad and stick move through the channel list and the guide, A and B confirm and go back, the bumpers switch channels, the triggers change the volume, View and Menu together quit. Works on the Steam Deck in Game Mode.</p>
