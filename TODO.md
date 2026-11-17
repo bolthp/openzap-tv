@@ -5,11 +5,11 @@ Backlog, roughly in priority order. Move items to a commit message when done.
 ## Playback
 
 - [ ] **Hardware decoding** (on by default, `auto-safe`, falls back to the
-      CPU) works on Windows + NVIDIA (nvdec, also 4K HDR HEVC 10-bit) and
+      CPU) works on Windows + NVIDIA (nvdec, also 4K HDR HEVC 10-bit),
       Windows + AMD integrated graphics (Radeon 610M: `d3d11va-copy`, 4K HDR
-      at full frame rate). Not yet tried: Windows with Intel graphics, Linux
-      with VAAPI (Intel/AMD) or NVIDIA; the Steam Deck covers AMD/VAAPI. On
-      Linux, VAAPI may need the X11 or Wayland display passed to mpv's
+      at full frame rate) and the Steam Deck (VAAPI: `vaapi-copy`, 4K HEVC
+      10-bit). Not yet tried: Windows with Intel graphics, Linux with NVIDIA.
+      On Linux, VAAPI may need the X11 or Wayland display passed to mpv's
       renderer (not done yet) to decode without copying frames.
 
 ## Inspired by OTT-Play
@@ -61,16 +61,11 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
 
 ## Gamepads and Steam Deck
 
-- [ ] Run on the Steam Deck (SteamOS: x86_64 Linux, AMD GPU, 1280×800).
-      Desktop Mode: the Flatpak (libmpv bundled; SteamOS has a read-only
-      system, so no `libmpv2` package). Game Mode: added as a non-Steam game, runs fullscreen under
-      gamescope. Check VAAPI hardware decoding on the Deck's GPU.
-- [ ] First test on the Deck (0.5.1, Flatpak): starts and plays. Open:
-      the settings dialog did not fit the screen (0.5.2 makes it scroll;
-      check whether the UI scale or the window size was the cause — see
-      the `window at` lines of the debug log); sound was lost on all
-      channels after a while with Bluetooth headphones (cause unknown;
-      0.5.2 logs keys, mute and volume and shows why a channel is silent).
+- [x] Runs on the Steam Deck: the Flatpak in Desktop Mode, a non-Steam
+      game in Game Mode (fullscreen under gamescope); the settings dialog
+      fits the screen. Open: sound was lost after a while with Bluetooth
+      headphones in 0.5.1 — maybe the same system-mixer mute as below;
+      retest with headphones.
 - [x] No sound in Game Mode (0.5.2): WirePlumber restored a saved mute for
       streams named "mpv". 0.5.3 names the stream "OpenZap", shows a mute
       by the system mixer and lifts it with M; sound confirmed on the Deck.
@@ -92,11 +87,11 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
       is switched while running; all buttons, the file browser and
       View + Menu quit confirmed. Holding ↓ on the video opened 10 streams
       a second: switches in quick succession now play only where they stop.
-- [ ] Settings dialog with a gamepad (touch works on the Deck).
-- [ ] "TV" layout for small screens / couch distance: the interface scale
-      (settings, `Ctrl` + `+`/`-`/`0`, 75–200 %) makes text and rows larger;
-      try 150 % on the Deck. Maybe choose a larger scale by itself in Game
-      Mode, and a wider focus outline, once it has been seen there.
+- [x] Settings dialog with a gamepad (0.6.0, Deck): D-pad moves between
+      fields, A toggles/opens, B cancels, the focus outline is visible.
+- [x] Interface scale (settings, `Ctrl` + `+`/`-`/`0`, 75–200 %) works on
+      the Deck; no automatic "TV" scale for Game Mode needed (75 % is
+      preferred there).
 
 ## Packaging
 
