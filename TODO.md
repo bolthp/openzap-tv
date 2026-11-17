@@ -63,9 +63,8 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
 
 - [x] Runs on the Steam Deck: the Flatpak in Desktop Mode, a non-Steam
       game in Game Mode (fullscreen under gamescope); the settings dialog
-      fits the screen. Open: sound was lost after a while with Bluetooth
-      headphones in 0.5.1 — maybe the same system-mixer mute as below;
-      retest with headphones.
+      fits the screen. Bluetooth headphones work (the sound loss seen in
+      0.5.1 did not come back).
 - [x] No sound in Game Mode (0.5.2): WirePlumber restored a saved mute for
       streams named "mpv". 0.5.3 names the stream "OpenZap", shows a mute
       by the system mixer and lifts it with M; sound confirmed on the Deck.
