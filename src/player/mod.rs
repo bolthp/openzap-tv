@@ -440,6 +440,12 @@ impl Player {
         Ok(())
     }
 
+    /// Sends streams opened from now on through this HTTP proxy
+    /// (`http://[user:pass@]host:port`), or directly with `None`.
+    pub fn set_http_proxy(&self, url: Option<&str>) -> Result<(), PlayerError> {
+        self.set_property("http-proxy", url.unwrap_or(""))
+    }
+
     pub fn set_aspect(&self, mode: AspectMode) -> Result<(), PlayerError> {
         for (name, value) in mode.mpv_properties() {
             self.set_property(name, value)?;
@@ -661,6 +667,17 @@ mod tests {
             p.set_optional_option("idle", "maybe"),
             Err(PlayerError::Mpv(_))
         ));
+    }
+
+    #[test]
+    fn http_proxy_can_be_set_and_cleared() {
+        require_mpv!();
+        let p = headless();
+        let url = "http://u:fakepass@proxy.example.com:3128";
+        assert_eq!(p.set_http_proxy(Some(url)), Ok(()));
+        assert_eq!(p.get_property("http-proxy").as_deref(), Some(url));
+        assert_eq!(p.set_http_proxy(None), Ok(()));
+        assert_eq!(p.get_property("http-proxy").as_deref(), Some(""));
     }
 
     #[test]

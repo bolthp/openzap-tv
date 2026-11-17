@@ -4,6 +4,7 @@ use eframe::egui;
 use openzap::cache;
 use openzap::config::{Config, SCALES, Theme, UpdatePolicy};
 use openzap::player::{HardwareDecoding, PlaybackSettings};
+use openzap::proxy::{Protocol, ProxyUrl};
 
 use crate::filepick::PickTarget;
 
@@ -20,6 +21,8 @@ pub struct SettingsDraft {
     pub scale_percent: u32,
     pub playlist_update: UpdatePolicy,
     pub epg_update: UpdatePolicy,
+    /// Proxy server as typed (empty: none).
+    pub proxy: String,
     /// Size of the cache folder (`None`: no cache on disk).
     pub cache_size: Option<u64>,
     /// "Clear" was clicked; the app clears the cache right away.
@@ -44,11 +47,19 @@ impl SettingsDraft {
             scale_percent: config.view.scale_percent,
             playlist_update: config.playlist_update,
             epg_update: config.epg_update,
+            proxy: config.proxy.clone().unwrap_or_default(),
             cache_size: None,
             clear_cache: false,
             pick_request: None,
             picking: false,
         }
+    }
+}
+
+impl SettingsDraft {
+    /// Why the proxy address cannot be used, if it cannot.
+    pub fn proxy_error(&self) -> Option<String> {
+        ProxyUrl::parse(&self.proxy).err().map(|e| e.to_string())
     }
 }
 
@@ -108,7 +119,9 @@ fn show_modal(
         ui.horizontal(|ui| {
             ui.weak(version_label());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Save").clicked() {
+                // Nothing invalid can be saved; the field says why.
+                let valid = draft.proxy_error().is_none();
+                if ui.add_enabled(valid, egui::Button::new("Save")).clicked() {
                     outcome = Some(Outcome::Save);
                 }
                 if ui.button("Cancel").clicked() {
@@ -166,6 +179,38 @@ fn body(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
          (also when the server cannot be reached). Local files are read on every start. \
          The reload button in the channel list always downloads.",
     );
+
+    section(ui, "Network");
+    egui::Grid::new("settings-network")
+        .num_columns(2)
+        .spacing([12.0, 8.0])
+        .show(ui, |ui| {
+            ui.label("Proxy");
+            ui.add(
+                egui::TextEdit::singleline(&mut draft.proxy)
+                    .hint_text("optional: host:port, http://… or socks5://…")
+                    .desired_width(f32::INFINITY),
+            );
+            ui.end_row();
+        });
+    match (draft.proxy_error(), ProxyUrl::parse(&draft.proxy)) {
+        (Some(error), _) => {
+            ui.colored_label(ui.visuals().error_fg_color, error);
+        }
+        (None, Ok(Some(p))) if p.protocol() != Protocol::Http => {
+            ui.small(
+                "A SOCKS proxy is used for playlists, guides and logos only: streams \
+                 cannot go through it and are opened directly. Use an HTTP proxy to \
+                 send streams through it too.",
+            );
+        }
+        _ => {
+            ui.small(
+                "For playlists, guides, logos and streams. A user name and password \
+                 go before the host: http://user:password@host:port.",
+            );
+        }
+    }
 
     section(ui, "Playback");
     egui::Grid::new("settings-playback")
@@ -383,6 +428,25 @@ mod tests {
         // The contents do not fit the smallest window: there they scroll.
         let low = dialog_rect(egui::vec2(720.0, 480.0));
         assert!(low.height() < tall.height());
+    }
+
+    #[test]
+    fn proxy_address_is_checked() {
+        let mut draft = SettingsDraft::new("", "", &Config::default());
+        assert_eq!(draft.proxy, "");
+        assert_eq!(draft.proxy_error(), None, "no proxy is fine");
+        draft.proxy = "socks5://127.0.0.1:1080".into();
+        assert_eq!(draft.proxy_error(), None);
+        draft.proxy = "proxy.example.com:port".into();
+        assert!(draft.proxy_error().unwrap().contains("port"));
+        let config = Config {
+            proxy: Some("http://proxy.example.com:3128".into()),
+            ..Config::default()
+        };
+        assert_eq!(
+            SettingsDraft::new("", "", &config).proxy,
+            "http://proxy.example.com:3128"
+        );
     }
 
     #[test]

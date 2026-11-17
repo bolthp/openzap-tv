@@ -18,6 +18,7 @@ pub mod mask;
 pub mod pad;
 pub mod platform;
 pub mod player;
+pub mod proxy;
 pub mod source;
 pub mod streaminfo;
 pub mod timeshift;

@@ -174,12 +174,23 @@ fn file_error(path: &std::path::Path, kind: ErrorKind) -> FetchError {
 }
 
 fn connect(url: &str) -> Result<impl Read + Send + use<>, FetchError> {
-    let config = ureq::Agent::config_builder()
+    connect_via(url, crate::proxy::current_for_ureq())
+}
+
+/// `proxy`: `None` keeps ureq's default (proxy from the environment).
+fn connect_via(
+    url: &str,
+    proxy: Option<ureq::Proxy>,
+) -> Result<impl Read + Send + use<>, FetchError> {
+    let mut builder = ureq::Agent::config_builder()
         .timeout_connect(Some(CONNECT_TIMEOUT))
         .timeout_recv_response(Some(RESPONSE_TIMEOUT))
         .timeout_per_read(Some(READ_TIMEOUT))
-        .user_agent(concat!("OpenZap/", env!("CARGO_PKG_VERSION")))
-        .build();
+        .user_agent(concat!("OpenZap/", env!("CARGO_PKG_VERSION")));
+    if proxy.is_some() {
+        builder = builder.proxy(proxy);
+    }
+    let config = builder.build();
     let agent = ureq::Agent::new_with_config(config);
     let response = agent.get(url).call().map_err(map_http_error)?;
     // Unlimited here; `Limited` in `open` enforces the size.
@@ -430,6 +441,58 @@ mod tests {
         opened.reader.read_to_string(&mut text).unwrap();
         assert_eq!(text, "<tv></tv>");
         assert!(opened.compressed);
+    }
+
+    /// A one-shot HTTP proxy: answers `CONNECT` (or a plain proxied
+    /// `GET`) and then serves `body`. Returns its address and the request
+    /// heads it saw.
+    fn proxy_once(body: &'static [u8]) -> (String, std::sync::mpsc::Receiver<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let read_head = |stream: &mut std::net::TcpStream| {
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap_or(0) == 1 {
+                    head.push(byte[0]);
+                }
+                String::from_utf8_lossy(&head).into_owned()
+            };
+            let mut head = read_head(&mut stream);
+            if head.starts_with("CONNECT ") {
+                tx.send(head).unwrap();
+                stream
+                    .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                    .unwrap();
+                head = read_head(&mut stream);
+            }
+            tx.send(head).unwrap();
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(header.as_bytes()).unwrap();
+            stream.write_all(body).unwrap();
+        });
+        (format!("http://{addr}"), rx)
+    }
+
+    #[test]
+    fn downloads_through_an_http_proxy() {
+        let (proxy_addr, heads) = proxy_once(b"#EXTM3U\n");
+        let proxy = ureq::Proxy::new(&proxy_addr).unwrap();
+        // Nothing listens there: only the proxy can answer.
+        let mut reader = connect_via("http://playlist.example.com/list.m3u", Some(proxy)).unwrap();
+        let mut text = String::new();
+        reader.read_to_string(&mut text).unwrap();
+        assert_eq!(text, "#EXTM3U\n");
+        let first = heads.recv().unwrap();
+        assert!(
+            first.contains("playlist.example.com"),
+            "the proxy was asked for the host: {first}"
+        );
     }
 
     #[test]

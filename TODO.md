@@ -40,14 +40,14 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
 
 ## Settings
 
-- [ ] Proxy (see Network) goes into the Settings dialog.
 - [ ] Possibly: audio/subtitle language preference, deinterlacing.
 
 ## Network
 
-- [ ] Proxy support (HTTP/SOCKS) for playlist, EPG and streams — mpv has
-      `http-proxy`, ureq supports proxies. Today streams that need it only
-      work through a system VPN.
+- [x] Proxy (settings → Network): HTTP and SOCKS4/5 for playlists, guides
+      and logos (ureq); streams only through an HTTP proxy (mpv's
+      `http-proxy`, FFmpeg has no SOCKS). Empty: ureq follows `ALL_PROXY` /
+      `HTTPS_PROXY` / `HTTP_PROXY`. Not yet tried with a real proxy server.
 
 ## Logos
 

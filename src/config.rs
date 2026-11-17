@@ -180,6 +180,9 @@ pub struct Config {
     pub channel_aspect: BTreeMap<String, AspectMode>,
     /// Guide time shift chosen for a channel (by `Channel::key`), minutes.
     pub channel_shift: BTreeMap<String, i64>,
+    /// Proxy server as typed in the settings (see `proxy::ProxyUrl`);
+    /// may contain a password.
+    pub proxy: Option<String>,
 }
 
 impl Default for Config {
@@ -200,6 +203,7 @@ impl Default for Config {
             epg_update: UpdatePolicy::Daily,
             channel_aspect: BTreeMap::new(),
             channel_shift: BTreeMap::new(),
+            proxy: None,
         }
     }
 }
@@ -239,6 +243,7 @@ impl Config {
             match key.trim() {
                 "playlist" if !value.is_empty() => cfg.playlist = Some(value.to_string()),
                 "epg" if !value.is_empty() => cfg.epg = Some(value.to_string()),
+                "proxy" if !value.is_empty() => cfg.proxy = Some(value.to_string()),
                 "favorite" if !value.is_empty() => {
                     cfg.favorites.insert(value.to_string());
                 }
@@ -344,6 +349,9 @@ impl Config {
         }
         if let Some(e) = &self.epg {
             out.push_str(&format!("epg={}\n", one_line(e)));
+        }
+        if let Some(p) = &self.proxy {
+            out.push_str(&format!("proxy={}\n", one_line(p)));
         }
         out.push_str(&format!("volume={}\n", self.volume));
         out.push_str(&format!("resume_last={}\n", yes_no(self.resume_last)));
@@ -522,6 +530,7 @@ mod tests {
             ]
             .into(),
             channel_shift: [("Sport = One HD".to_string(), -65)].into(),
+            proxy: Some("socks5://user:fakepass@proxy.example.com:1080".into()),
         };
         assert_eq!(Config::parse(&cfg.serialize()), cfg);
     }

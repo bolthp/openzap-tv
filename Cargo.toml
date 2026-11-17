@@ -18,7 +18,8 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 libloading = "0.9.0"
 quick-xml = "0.42.0"
 rfd = "0.17"
-ureq = "3.5.0"
+# `socks-proxy` adds no crates: SOCKS support for the proxy setting.
+ureq = { version = "3.5.0", features = ["socks-proxy"] }
 
 [profile.release]
 lto = "thin"

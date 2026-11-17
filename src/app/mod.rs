@@ -27,6 +27,7 @@ use openzap::m3u::{Channel, Playlist};
 use openzap::pad;
 use openzap::platform;
 use openzap::player::{AspectMode, Player, PlayerEvent, PropertyKind, PropertyValue};
+use openzap::proxy::{self, ProxyUrl};
 use openzap::timeshift::{self, Position, Target};
 use openzap::tracks::{self, Track};
 use openzap::{cache, catchup, clock};
@@ -513,6 +514,7 @@ impl App {
         app.epg_input = epg_input;
         app.config = config;
         app.config_path = config_path;
+        app.apply_proxy();
         app
     }
 
@@ -860,6 +862,15 @@ impl App {
             self.config.view.scale_percent = draft.scale_percent;
             self.view_pending = true;
         }
+        let proxy = draft.proxy.trim().to_string();
+        let proxy = (!proxy.is_empty()).then_some(proxy);
+        let proxy_changed = proxy != self.config.proxy;
+        if proxy_changed {
+            self.config.proxy = proxy;
+            self.apply_proxy();
+            // The channel playing goes through the new route too.
+            self.restart();
+        }
         if draft.playback != self.config.playback {
             self.config.playback = draft.playback;
             let applied = self.player.as_ref().map(|p| p.apply(&draft.playback));
@@ -868,7 +879,34 @@ impl App {
             }
         }
         self.pending_save = true;
-        sources_changed && !self.playlist_input.is_empty()
+        (sources_changed || proxy_changed) && !self.playlist_input.is_empty()
+    }
+
+    /// The proxy from the config, checked (`None` if unset or invalid).
+    fn proxy(&self) -> Option<ProxyUrl> {
+        ProxyUrl::parse(self.config.proxy.as_deref().unwrap_or_default())
+            .ok()
+            .flatten()
+    }
+
+    /// Hands the configured proxy to the downloads and the player.
+    fn apply_proxy(&mut self) {
+        let proxy = self.proxy();
+        if let Err(e) = ProxyUrl::parse(self.config.proxy.as_deref().unwrap_or_default()) {
+            self.notices.push(format!("Proxy not used: {e}"));
+        }
+        self.dlog(&match &proxy {
+            Some(p) => format!("proxy: {}", p.describe()),
+            None => "proxy: none (environment variables apply)".into(),
+        });
+        let mpv = proxy.as_ref().and_then(ProxyUrl::mpv_value);
+        proxy::set_current(proxy);
+        if let Some(player) = &self.player
+            && let Err(e) = player.set_http_proxy(mpv.as_deref())
+        {
+            self.notices
+                .push(format!("Cannot set the proxy for streams: {e}"));
+        }
     }
 
     pub fn set_context(&mut self, ctx: egui::Context) {
@@ -885,6 +923,9 @@ impl App {
     pub fn set_debug_log(&mut self, log: Arc<DebugLog>) {
         self.video.enable_diagnostics();
         self.log = Some(log);
+        if let Some(p) = self.proxy() {
+            self.dlog(&format!("proxy: {}", p.describe()));
+        }
     }
 
     /// Writes to the debug log if enabled (URLs are masked by the log).
@@ -920,6 +961,11 @@ impl App {
         let level = if self.log.is_some() { "v" } else { "warn" };
         if let Err(e) = player.request_log_messages(level) {
             self.dlog(&format!("cannot get mpv log: {e}"));
+        }
+        let mpv_proxy = self.proxy().as_ref().and_then(ProxyUrl::mpv_value);
+        if let Err(e) = player.set_http_proxy(mpv_proxy.as_deref()) {
+            self.notices
+                .push(format!("Cannot set the proxy for streams: {e}"));
         }
         self.dlog("player created, video attached");
         // Buffering state for the overlay; without it playback still works.
@@ -3026,6 +3072,32 @@ mod tests {
         assert!(!app.apply_settings(draft), "sources unchanged");
         assert!(app.reload_epg);
         assert!(!app.config.archive);
+    }
+
+    #[test]
+    fn a_new_proxy_is_saved_and_replays_the_channel() {
+        let (playlist, epg) = demo_data(0);
+        let mut app = App::new(playlist, epg, vec![]);
+        app.playing = Some(1);
+        let mut draft = SettingsDraft::new("", "", &app.config);
+        draft.proxy = " http://proxy.example.com:3128 ".into();
+        app.apply_settings(draft.clone());
+        assert_eq!(
+            app.config.proxy.as_deref(),
+            Some("http://proxy.example.com:3128")
+        );
+        assert_eq!(app.pending_play, Some(1), "played again via the proxy");
+        assert!(app.pending_save);
+        // Unchanged: nothing is replayed.
+        app.pending_play = None;
+        draft.proxy = "http://proxy.example.com:3128".into();
+        app.apply_settings(draft.clone());
+        assert_eq!(app.pending_play, None);
+        draft.proxy.clear();
+        app.apply_settings(draft);
+        assert_eq!(app.config.proxy, None);
+        // Downloads of other tests must not go through the fake proxy.
+        assert_eq!(app.proxy(), None);
     }
 
     #[test]
