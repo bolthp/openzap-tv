@@ -7,10 +7,9 @@ Backlog, roughly in priority order. Move items to a commit message when done.
 - [x] **Hardware decoding** (on by default, `auto-safe`, falls back to the
       CPU) works on Windows + NVIDIA (nvdec, also 4K HDR HEVC 10-bit),
       Windows + AMD integrated graphics (Radeon 610M: `d3d11va-copy`, 4K HDR
-      at full frame rate) and the Steam Deck (VAAPI: `vaapi-copy`, 4K HEVC
-      10-bit).
-- [ ] Hardware decoding not yet tried: Windows with Intel graphics, Linux
-      with NVIDIA.
+      at full frame rate), the Steam Deck (VAAPI: `vaapi-copy`, 4K HEVC
+      10-bit) and Ubuntu + NVIDIA on Wayland (Flatpak, 4K).
+- [ ] Hardware decoding not yet tried: Windows with Intel graphics.
 - [ ] Zero-copy VAAPI on Linux: pass the X11 or Wayland display to mpv's
       renderer so frames are not copied (`vaapi` instead of `vaapi-copy`).
 
@@ -101,8 +100,10 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
 
 - [x] Flatpak on the Steam Deck (KDE Plasma in Desktop Mode): video, VA-API
       decoding, file chooser.
-- [ ] Check the Flatpak on Ubuntu (Wayland): video, VA-API decoding, file
-      chooser, icon.
+- [x] Flatpak on Ubuntu (Wayland) with NVIDIA: video and 4K decoding work.
+      The large first download is the Freedesktop runtime, fetched once
+      and shared with other Flatpak apps.
+- [ ] Flatpak on Ubuntu: file chooser and icon not reported yet.
 - [ ] Publish on Flathub (needs a submission and review; the manifest already
       builds offline).
 - [ ] Maybe an AppImage as well (no runtime download).
