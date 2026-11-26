@@ -86,6 +86,9 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
       is switched while running; all buttons, the file browser and
       View + Menu quit confirmed. Holding ↓ on the video opened 10 streams
       a second: switches in quick succession now play only where they stop.
+      0.6.1 confirmed on the Deck (debounced zapping).
+- [x] Moving the list selection to the last channels no longer flickers:
+      the centring scroll offset is clamped to the end of the list.
 - [x] Settings dialog with a gamepad (0.6.0, Deck): D-pad moves between
       fields, A toggles/opens, B cancels, the focus outline is visible.
 - [x] Interface scale (settings, `Ctrl` + `+`/`-`/`0`, 75–200 %) works on

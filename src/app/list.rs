@@ -220,8 +220,14 @@ impl App {
             && let Some(pos) = self.visible.iter().position(|&i| i == target)
         {
             let step = row_height + ui.spacing().item_spacing.y;
-            let offset = pos as f32 * step - (ui.available_height() - row_height) / 2.0;
-            scroll = scroll.vertical_scroll_offset(offset.max(0.0));
+            let offset = centered_offset(
+                pos,
+                self.visible.len(),
+                row_height,
+                step,
+                ui.available_height(),
+            );
+            scroll = scroll.vertical_scroll_offset(offset);
         }
 
         let mut clicked = None;
@@ -384,6 +390,16 @@ impl App {
     }
 }
 
+/// Scroll offset that puts row `pos` in the middle of a `viewport` high
+/// list, clamped to the list's ends. Past the end egui would draw one frame
+/// too far and then snap back, which shows up as flicker near the bottom.
+fn centered_offset(pos: usize, rows: usize, row_height: f32, step: f32, viewport: f32) -> f32 {
+    let offset = pos as f32 * step - (viewport - row_height) / 2.0;
+    // `show_rows` content: `rows` rows with spacing between them.
+    let content = rows as f32 * step - (step - row_height);
+    offset.min(content - viewport).max(0.0)
+}
+
 /// Single-line text cut with "…" to fit `width`.
 fn elided(
     painter: &egui::Painter,
@@ -400,6 +416,21 @@ fn elided(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn centered_offset_stays_within_the_list() {
+        // 100 rows of 40 px + 10 px spacing, 500 px viewport.
+        let at = |pos| centered_offset(pos, 100, 40.0, 50.0, 500.0);
+        assert_eq!(at(0), 0.0);
+        assert_eq!(at(2), 0.0);
+        assert_eq!(at(50), 50.0 * 50.0 - 230.0);
+        // Content is 4990 px: the last row ends at the bottom edge.
+        let max = 4990.0 - 500.0;
+        assert_eq!(at(99), max);
+        assert_eq!(at(95), max);
+        // A list shorter than the viewport never scrolls.
+        assert_eq!(centered_offset(5, 6, 40.0, 50.0, 500.0), 0.0);
+    }
 
     #[test]
     fn overlay_opens_at_the_edge_and_lingers() {
