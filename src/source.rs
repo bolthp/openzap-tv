@@ -49,11 +49,21 @@ pub enum FetchError {
     Status(u16),
     Timeout,
     HostNotFound,
+    /// The proxy from the settings failed: unreachable, login refused, …
+    Proxy(ProxyFailure),
     /// Any other network problem.
     Network,
     TooLarge,
     /// Corrupt gzip data.
     Decompress,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyFailure {
+    Unreachable,
+    LoginRejected,
+    /// The proxy could not or would not reach the server.
+    Refused,
 }
 
 impl fmt::Display for FetchError {
@@ -63,6 +73,15 @@ impl fmt::Display for FetchError {
             FetchError::Status(code) => write!(f, "server answered HTTP {code}"),
             FetchError::Timeout => write!(f, "request timed out"),
             FetchError::HostNotFound => write!(f, "host not found"),
+            FetchError::Proxy(ProxyFailure::Unreachable) => {
+                write!(f, "cannot connect to the proxy server")
+            }
+            FetchError::Proxy(ProxyFailure::LoginRejected) => {
+                write!(f, "the proxy server rejected the login")
+            }
+            FetchError::Proxy(ProxyFailure::Refused) => {
+                write!(f, "the proxy server could not open the connection")
+            }
             FetchError::Network => write!(f, "network error"),
             FetchError::TooLarge => write!(f, "file is too large"),
             FetchError::Decompress => write!(f, "cannot decompress gzip data"),
@@ -187,22 +206,40 @@ fn connect_via(
         .timeout_recv_response(Some(RESPONSE_TIMEOUT))
         .timeout_per_read(Some(READ_TIMEOUT))
         .user_agent(concat!("OpenZap/", env!("CARGO_PKG_VERSION")));
-    if proxy.is_some() {
+    let via_proxy = proxy.is_some();
+    if via_proxy {
         builder = builder.proxy(proxy);
     }
     let config = builder.build();
     let agent = ureq::Agent::new_with_config(config);
-    let response = agent.get(url).call().map_err(map_http_error)?;
+    let response = agent
+        .get(url)
+        .call()
+        .map_err(|e| map_http_error(e, via_proxy))?;
     // Unlimited here; `Limited` in `open` enforces the size.
     Ok(response.into_body().into_reader())
 }
 
 /// Translates ureq errors into messages that cannot leak the URL.
-fn map_http_error(err: ureq::Error) -> FetchError {
+/// `via_proxy`: a proxy from the settings is in use, so a refused
+/// connection or login is the proxy's.
+fn map_http_error(err: ureq::Error, via_proxy: bool) -> FetchError {
     match err {
         ureq::Error::StatusCode(code) => FetchError::Status(code),
         ureq::Error::Timeout(_) => FetchError::Timeout,
         ureq::Error::HostNotFound => FetchError::HostNotFound,
+        // HTTP proxy: "proxy server responded 407/…" or "did not respond".
+        ureq::Error::ConnectProxyFailed(reason) => FetchError::Proxy(if reason.contains("407") {
+            ProxyFailure::LoginRejected
+        } else {
+            ProxyFailure::Refused
+        }),
+        ureq::Error::Io(e) if via_proxy => match e.kind() {
+            ErrorKind::ConnectionRefused => FetchError::Proxy(ProxyFailure::Unreachable),
+            // SOCKS: wrong password or user id.
+            ErrorKind::PermissionDenied => FetchError::Proxy(ProxyFailure::LoginRejected),
+            _ => FetchError::Network,
+        },
         _ => FetchError::Network,
     }
 }
@@ -492,6 +529,70 @@ mod tests {
         assert!(
             first.contains("playlist.example.com"),
             "the proxy was asked for the host: {first}"
+        );
+    }
+
+    /// A port nothing listens on.
+    fn closed_port() -> u16 {
+        TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    /// A proxy that answers every request with `answer` (raw bytes).
+    fn proxy_answering(answer: &'static [u8]) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(answer);
+            // Drain until the client hangs up: closing with unread data
+            // would reset the connection before it reads the answer.
+            while stream.read(&mut buf).is_ok_and(|n| n > 0) {}
+        });
+        addr.to_string()
+    }
+
+    fn fetch_via(proxy: &str) -> FetchError {
+        let proxy = ureq::Proxy::new(proxy).unwrap();
+        match connect_via("http://playlist.example.com/list.m3u", Some(proxy)) {
+            Ok(_) => panic!("the download should fail"),
+            Err(e) => e,
+        }
+    }
+
+    #[test]
+    fn proxy_failures_are_named() {
+        let port = closed_port();
+        assert_eq!(
+            fetch_via(&format!("http://127.0.0.1:{port}")),
+            FetchError::Proxy(ProxyFailure::Unreachable)
+        );
+        assert_eq!(
+            fetch_via(&format!("socks5h://127.0.0.1:{port}")),
+            FetchError::Proxy(ProxyFailure::Unreachable)
+        );
+        let addr = proxy_answering(
+            b"HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n",
+        );
+        assert_eq!(
+            fetch_via(&format!("http://u:fakepass@{addr}")),
+            FetchError::Proxy(ProxyFailure::LoginRejected)
+        );
+        // SOCKS5: user/password chosen, then status 1 (failure).
+        let addr = proxy_answering(b"\x05\x02\x01\x01");
+        assert_eq!(
+            fetch_via(&format!("socks5h://u:fakepass@{addr}")),
+            FetchError::Proxy(ProxyFailure::LoginRejected)
+        );
+        let addr = proxy_answering(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n");
+        assert_eq!(
+            fetch_via(&format!("http://{addr}")),
+            FetchError::Proxy(ProxyFailure::Refused)
         );
     }
 

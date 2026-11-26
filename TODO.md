@@ -48,7 +48,12 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
 - [x] Proxy (settings → Network): HTTP and SOCKS4/5 for playlists, guides
       and logos (ureq); streams only through an HTTP proxy (mpv's
       `http-proxy`, FFmpeg has no SOCKS). Empty: ureq follows `ALL_PROXY` /
-      `HTTPS_PROXY` / `HTTP_PROXY`. Not yet tried with a real proxy server.
+      `HTTPS_PROXY` / `HTTP_PROXY`. Tried in WSL with a local test proxy
+      (`logproxy.py`): HTTP with and without a login (playlist, guide, logos,
+      TS and HTTPS HLS streams via CONNECT), SOCKS4a and SOCKS5h with a login
+      (downloads only, streams direct as intended); a wrong login or a dead
+      proxy now says so instead of "network error". Not yet tried with a
+      real remote proxy, or changing the proxy while running.
 
 ## Logos
 
