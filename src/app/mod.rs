@@ -77,6 +77,8 @@ fn overlay_text(state: &StreamState) -> Option<String> {
 }
 
 /// Volume step for the mouse wheel, in percent.
+/// Smallest window (points); `--size` may go below it.
+pub const MIN_WINDOW_SIZE: [f32; 2] = [720.0, 480.0];
 const VOLUME_STEP: f64 = 5.0;
 /// How long short on-screen messages (volume, mute) stay visible, seconds.
 const OSD_SECS: f64 = 1.5;
@@ -365,6 +367,8 @@ pub struct App {
     log: Option<Arc<DebugLog>>,
     /// `--position`: where to move the window on the first frame (pixels).
     start_position: Option<startpos::StartPosition>,
+    /// `--size`: window size to set once placed (pixels).
+    start_size: Option<(i32, i32)>,
     /// The settings dialog, while open.
     settings: Option<SettingsDraft>,
     /// A file dialog opened from the settings, while open.
@@ -598,6 +602,7 @@ impl App {
             ctx: egui::Context::default(),
             log: None,
             start_position: None,
+            start_size: None,
             settings: None,
             file_pick: None,
             builtin_browser: false,
@@ -923,45 +928,64 @@ impl App {
         self.ctx = ctx;
     }
 
-    /// Enables the diagnostic log (`--debug`).
-    /// Moves the window to this screen position (pixels) once it is up.
-    pub fn set_start_position(&mut self, x: i32, y: i32) {
-        self.start_position = Some(startpos::StartPosition::new(x, y));
+    /// `--position` / `--size`: where and how big the window should be
+    /// (screen pixels), applied once it is up.
+    pub fn set_start_geometry(&mut self, position: Option<(i32, i32)>, size: Option<(i32, i32)>) {
+        self.start_position = position.map(|(x, y)| startpos::StartPosition::new(x, y));
+        self.start_size = size;
     }
 
-    /// Drives `--position` (see `startpos`).
-    fn update_start_position(&mut self, ctx: &egui::Context) {
-        let Some(start) = &mut self.start_position else {
+    /// Drives `--position` (see `startpos`), then `--size`.
+    fn update_start_geometry(&mut self, ctx: &egui::Context) {
+        if self.start_position.is_none() && self.start_size.is_none() {
             return;
-        };
-        // egui positions windows in points; the flag is in pixels.
+        }
+        // egui positions windows in points; the flags are in pixels.
         let ppp = ctx.pixels_per_point();
         let (time, outer) = ctx.input(|i| (i.time, i.viewport().outer_rect));
-        let current = outer.map(|r| {
-            (
-                (r.min.x * ppp).round() as i32,
-                (r.min.y * ppp).round() as i32,
-            )
-        });
-        match start.step(time, current) {
-            startpos::Step::WaitUntil(t) => {
-                ctx.request_repaint_after(Duration::from_secs_f64(t - time));
+        if let Some(start) = &mut self.start_position {
+            let current = outer.map(|r| {
+                (
+                    (r.min.x * ppp).round() as i32,
+                    (r.min.y * ppp).round() as i32,
+                )
+            });
+            match start.step(time, current) {
+                startpos::Step::WaitUntil(t) => {
+                    ctx.request_repaint_after(Duration::from_secs_f64(t - time));
+                }
+                startpos::Step::Move { x, y, attempt } => {
+                    let pos = egui::pos2(x as f32 / ppp, y as f32 / ppp);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
+                    self.dlog(&format!(
+                        "--position: move to {x},{y} (try {attempt}, window at {current:?})"
+                    ));
+                    ctx.request_repaint();
+                }
+                done => {
+                    self.dlog(&format!("--position: {done:?}, window at {current:?}"));
+                    self.start_position = None;
+                    ctx.request_repaint();
+                }
             }
-            startpos::Step::Move { x, y, attempt } => {
-                let pos = egui::pos2(x as f32 / ppp, y as f32 / ppp);
-                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
-                self.dlog(&format!(
-                    "--position: move to {x},{y} (try {attempt}, window at {current:?})"
-                ));
-                ctx.request_repaint();
-            }
-            done => {
-                self.dlog(&format!("--position: {done:?}, window at {current:?}"));
-                self.start_position = None;
-            }
+            return;
+        }
+        if time < startpos::FIRST_TRY {
+            ctx.request_repaint_after(Duration::from_secs_f64(startpos::FIRST_TRY - time));
+            return;
+        }
+        if let Some((w, h)) = self.start_size.take() {
+            // Only now is the scale of the window's monitor known.
+            let size = egui::vec2(w as f32 / ppp, h as f32 / ppp);
+            ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(
+                size.min(MIN_WINDOW_SIZE.into()),
+            ));
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+            self.dlog(&format!("--size: {w}x{h} pixels = {size:?} points"));
         }
     }
 
+    /// Enables the diagnostic log (`--debug`).
     pub fn set_debug_log(&mut self, log: Arc<DebugLog>) {
         self.video.enable_diagnostics();
         self.log = Some(log);
@@ -2386,7 +2410,7 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let now = unix_now();
-        self.update_start_position(ui.ctx());
+        self.update_start_geometry(ui.ctx());
         if !self.window_logged {
             self.window_logged = true;
             self.log_window("start", ui.ctx());

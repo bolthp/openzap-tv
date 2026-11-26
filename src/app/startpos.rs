@@ -4,7 +4,7 @@
 //! be ignored (seen with WSLg), so it is repeated until the window is there.
 
 /// First try this long after start, seconds.
-const FIRST_TRY: f64 = 0.2;
+pub const FIRST_TRY: f64 = 0.2;
 /// Wait between tries, seconds.
 const RETRY_AFTER: f64 = 0.5;
 const MAX_TRIES: u32 = 5;

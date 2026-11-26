@@ -104,13 +104,13 @@ button in the channel list downloads both right away.
 ```sh
 openzap                                   # sources from the settings
 openzap playlist.m3u [epg.xml]            # or override them for this run
-openzap --position 100,100                # open the window there (screen pixels)
+openzap --position 100,100 --size 1600x900   # window position and size (screen pixels)
 ```
 
 `--position` puts the window at that point of the desktop, e.g. on another
-monitor; for that run the saved window size and position are neither used nor
-updated. Wayland does not let applications place their windows, so it has no
-effect there.
+monitor, and `--size` sets its size; for that run the saved window size and
+position are neither used nor updated. Wayland does not let applications place
+their windows, so `--position` has no effect there.
 
 Settings (sources, volume, favorites, playback options) are stored in a
 plain-text file: `~/.config/openzap/config.txt` on Linux,

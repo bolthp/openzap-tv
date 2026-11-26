@@ -15,9 +15,10 @@ use openzap::mask::mask_urls_in_text;
 use openzap::platform;
 
 const DEBUG_FLAG: &str = "--debug";
-/// Where to put the window on start, in screen pixels (e.g. on another
-/// monitor); overrides the position saved at the last exit.
+/// Where to put the window on start and how big, in screen pixels (e.g. on
+/// another monitor); they override the geometry saved at the last exit.
 const POSITION_FLAG: &str = "--position";
+const SIZE_FLAG: &str = "--size";
 const DEBUG_LOG_NAME: &str = "openzap-debug.log";
 
 /// Removes `--debug` from the arguments; returns whether it was present.
@@ -27,27 +28,44 @@ fn take_debug_flag(args: &mut Vec<String>) -> bool {
     args.len() != before
 }
 
-/// Removes `--position X,Y` (or `--position=X,Y`) from the arguments and
-/// returns the window position in screen pixels; `Err` if the value is bad.
-fn take_position(args: &mut Vec<String>) -> Result<Option<(i32, i32)>, String> {
+/// Two numbers from a flag (`None`: not given), or why they are bad.
+type FlagPair = Result<Option<(i32, i32)>, String>;
+
+/// Removes `FLAG A<sep>B` (or `FLAG=A<sep>B`) from the arguments and
+/// returns the two numbers; `Err` names the expected `form` if the value
+/// is bad.
+fn take_pair(args: &mut Vec<String>, flag: &str, sep: char, form: &str) -> FlagPair {
     let Some(i) = args
         .iter()
-        .position(|a| a == POSITION_FLAG || a.starts_with(&format!("{POSITION_FLAG}=")))
+        .position(|a| a == flag || a.starts_with(&format!("{flag}=")))
     else {
         return Ok(None);
     };
-    let flag = args.remove(i);
-    let value = match flag.split_once('=') {
+    let arg = args.remove(i);
+    let value = match arg.split_once('=') {
         Some((_, v)) => v.to_string(),
         None if i < args.len() => args.remove(i),
-        None => return Err(format!("{POSITION_FLAG} needs X,Y")),
+        None => return Err(format!("{flag} needs {form}")),
     };
     let parsed = value
-        .split_once(',')
-        .and_then(|(x, y)| Some((x.trim().parse().ok()?, y.trim().parse().ok()?)));
+        .split_once(sep)
+        .and_then(|(a, b)| Some((a.trim().parse().ok()?, b.trim().parse().ok()?)));
     parsed
         .map(Some)
-        .ok_or_else(|| format!("{POSITION_FLAG}: \"{value}\" is not X,Y in pixels"))
+        .ok_or_else(|| format!("{flag}: \"{value}\" is not {form} in pixels"))
+}
+
+/// `--position X,Y`: the window's top-left corner.
+fn take_position(args: &mut Vec<String>) -> FlagPair {
+    take_pair(args, POSITION_FLAG, ',', "X,Y")
+}
+
+/// `--size WxH`: the window's inner size.
+fn take_size(args: &mut Vec<String>) -> FlagPair {
+    match take_pair(args, SIZE_FLAG, 'x', "WxH")? {
+        Some((w, h)) if w <= 0 || h <= 0 => Err(format!("{SIZE_FLAG}: {w}x{h} is not a size")),
+        size => Ok(size),
+    }
 }
 
 /// The command line as written to the debug log: all arguments, `--debug`
@@ -116,17 +134,19 @@ fn main() -> eframe::Result {
         }));
     }
 
-    let start_position = take_position(&mut args).unwrap_or_else(|e| {
-        eprintln!("{e}");
-        if let Some(log) = &debug_log {
-            log.line(&e);
-        }
-        None
-    });
+    let mut flag_value = |take: fn(&mut Vec<String>) -> FlagPair| {
+        take(&mut args).unwrap_or_else(|e| {
+            eprintln!("{e}");
+            if let Some(log) = &debug_log {
+                log.line(&e);
+            }
+            None
+        })
+    };
+    let start_position = flag_value(take_position);
+    let start_size = flag_value(take_size);
     let mut app = app::App::from_args(&args);
-    if let Some((x, y)) = start_position {
-        app.set_start_position(x, y);
-    }
+    app.set_start_geometry(start_position, start_size);
     if let Some(log) = &debug_log {
         app.set_debug_log(Arc::clone(log));
     }
@@ -142,7 +162,7 @@ fn main() -> eframe::Result {
         // Lets Wayland compositors find the `.desktop` file for the icon.
         .with_app_id(openzap::desktop::app_id(env))
         .with_inner_size([1280.0, 760.0])
-        .with_min_inner_size([720.0, 480.0]);
+        .with_min_inner_size(app::MIN_WINDOW_SIZE);
     // The PNG is compiled in, so this only fails if the file in the repo is broken.
     match eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
         Ok(icon) => viewport = viewport.with_icon(std::sync::Arc::new(icon)),
@@ -154,6 +174,12 @@ fn main() -> eframe::Result {
         // app corrects the position once the scale is known.
         viewport = viewport.with_position([x as f32, y as f32]);
     }
+    if let Some((w, h)) = start_size {
+        // Corrected for the scale once the window is up, like the position.
+        viewport = viewport
+            .with_inner_size([w as f32, h as f32])
+            .with_min_inner_size([0.0, 0.0]);
+    }
     let options = eframe::NativeOptions {
         // mpv renders video through OpenGL, so egui must use it too.
         renderer: eframe::Renderer::Glow,
@@ -161,8 +187,8 @@ fn main() -> eframe::Result {
         // Window size and position (eframe's `persistence` feature).
         persistence_path: openzap::config::default_path()
             .map(|p| openzap::config::window_state_path(&p)),
-        // The saved position would win over `--position`.
-        persist_window: start_position.is_none(),
+        // The saved geometry would win over `--position` / `--size`.
+        persist_window: start_position.is_none() && start_size.is_none(),
         ..Default::default()
     };
     let result = eframe::run_native(
@@ -220,6 +246,22 @@ mod tests {
             let mut args = strings(bad);
             assert!(take_position(&mut args).is_err(), "{bad:?}");
             assert!(args.is_empty(), "the flag is removed: {bad:?}");
+        }
+    }
+
+    #[test]
+    fn size_flag_takes_width_x_height() {
+        let strings = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let mut args = strings(&["--size", "1600x900", "a.m3u"]);
+        assert_eq!(take_size(&mut args), Ok(Some((1600, 900))));
+        assert_eq!(args, ["a.m3u"]);
+        assert_eq!(
+            take_size(&mut strings(&["--size=800x600"])),
+            Ok(Some((800, 600)))
+        );
+        assert_eq!(take_size(&mut strings(&[])), Ok(None));
+        for bad in ["1600,900", "0x600", "-5x10", "big"] {
+            assert!(take_size(&mut strings(&["--size", bad])).is_err(), "{bad}");
         }
     }
 
