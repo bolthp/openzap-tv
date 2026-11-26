@@ -5,6 +5,7 @@ mod list;
 mod logo;
 mod palette;
 mod schedule;
+mod startpos;
 mod view;
 
 use std::path::PathBuf;
@@ -362,6 +363,8 @@ pub struct App {
     ctx: egui::Context,
     /// Diagnostic log, only with `--debug`.
     log: Option<Arc<DebugLog>>,
+    /// `--position`: where to move the window on the first frame (pixels).
+    start_position: Option<startpos::StartPosition>,
     /// The settings dialog, while open.
     settings: Option<SettingsDraft>,
     /// A file dialog opened from the settings, while open.
@@ -594,6 +597,7 @@ impl App {
             video: VideoView::default(),
             ctx: egui::Context::default(),
             log: None,
+            start_position: None,
             settings: None,
             file_pick: None,
             builtin_browser: false,
@@ -920,6 +924,44 @@ impl App {
     }
 
     /// Enables the diagnostic log (`--debug`).
+    /// Moves the window to this screen position (pixels) once it is up.
+    pub fn set_start_position(&mut self, x: i32, y: i32) {
+        self.start_position = Some(startpos::StartPosition::new(x, y));
+    }
+
+    /// Drives `--position` (see `startpos`).
+    fn update_start_position(&mut self, ctx: &egui::Context) {
+        let Some(start) = &mut self.start_position else {
+            return;
+        };
+        // egui positions windows in points; the flag is in pixels.
+        let ppp = ctx.pixels_per_point();
+        let (time, outer) = ctx.input(|i| (i.time, i.viewport().outer_rect));
+        let current = outer.map(|r| {
+            (
+                (r.min.x * ppp).round() as i32,
+                (r.min.y * ppp).round() as i32,
+            )
+        });
+        match start.step(time, current) {
+            startpos::Step::WaitUntil(t) => {
+                ctx.request_repaint_after(Duration::from_secs_f64(t - time));
+            }
+            startpos::Step::Move { x, y, attempt } => {
+                let pos = egui::pos2(x as f32 / ppp, y as f32 / ppp);
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
+                self.dlog(&format!(
+                    "--position: move to {x},{y} (try {attempt}, window at {current:?})"
+                ));
+                ctx.request_repaint();
+            }
+            done => {
+                self.dlog(&format!("--position: {done:?}, window at {current:?}"));
+                self.start_position = None;
+            }
+        }
+    }
+
     pub fn set_debug_log(&mut self, log: Arc<DebugLog>) {
         self.video.enable_diagnostics();
         self.log = Some(log);
@@ -2344,6 +2386,7 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let now = unix_now();
+        self.update_start_position(ui.ctx());
         if !self.window_logged {
             self.window_logged = true;
             self.log_window("start", ui.ctx());
