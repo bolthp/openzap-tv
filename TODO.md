@@ -52,8 +52,12 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
       (`logproxy.py`): HTTP with and without a login (playlist, guide, logos,
       TS and HTTPS HLS streams via CONNECT), SOCKS4a and SOCKS5h with a login
       (downloads only, streams direct as intended); a wrong login or a dead
-      proxy now says so instead of "network error". Not yet tried with a
-      real remote proxy, or changing the proxy while running.
+      proxy now says so instead of "network error". Also through a remote
+      server (Canada, via SSH tunnel; HTTP and SOCKS5h with a login): real
+      playlist, guide, logos and an HTTPS HLS channel; traffic left from the
+      server's address. HTTP streams start slowly there (~15 s: 105 ms RTT,
+      and FFmpeg sends the login only after a 407 on every connection).
+- [ ] Proxy: changing it in the settings while running; Windows.
 
 ## Logos
 
