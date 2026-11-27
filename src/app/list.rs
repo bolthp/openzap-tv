@@ -218,20 +218,20 @@ impl App {
             + ui.text_style_height(&egui::TextStyle::Small)
             + 14.0;
         let mut scroll = egui::ScrollArea::vertical().auto_shrink(false);
-        // Keep the channel switched to with the keyboard in view.
+        // Keep the channel switched to with the keyboard in view. The list
+        // height drawn last frame is egui's own; the space left here is
+        // only an estimate (used until the list has been drawn once).
         if let Some(target) = self.scroll_to.take()
             && let Some(pos) = self.visible.iter().position(|&i| i == target)
         {
             let step = row_height + ui.spacing().item_spacing.y;
-            let offset = centered_offset(
-                pos,
-                self.visible.len(),
-                row_height,
-                step,
-                ui.available_height(),
-            );
+            let viewport = self
+                .list_drawn
+                .map_or_else(|| ui.available_height(), |(_, h)| h);
+            let offset = centered_offset(pos, self.visible.len(), row_height, step, viewport);
             self.dlog(&format!(
-                "list scroll: row {pos} of {}, viewport {:.1}, step {step:.2}, offset {offset:.1}",
+                "list scroll: row {pos} of {}, viewport {viewport:.1} (space {:.1}), \
+                 step {step:.2}, offset {offset:.1}",
                 self.visible.len(),
                 ui.available_height(),
             ));
@@ -265,6 +265,7 @@ impl App {
                 });
             }
         });
+        self.list_drawn = Some((out.state.unclamped_offset().y, out.inner_rect.height()));
         if self.scroll_trace > 0 {
             self.scroll_trace -= 1;
             self.dlog(&format!(
@@ -468,5 +469,59 @@ mod tests {
             ..ListOverlay::default()
         };
         assert!(list.is_visible(100.0, false, false));
+    }
+
+    /// Runs one frame of the list sliding out over the video, Deck-like:
+    /// 1280x800 pixels at 75 % interface scale.
+    fn overlay_frame(app: &mut App, ctx: &egui::Context, time: f64) {
+        let pixels = egui::vec2(1280.0, 800.0);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, pixels)),
+            time: Some(time),
+            ..Default::default()
+        };
+        ctx.run_ui(input, |ui| {
+            let screen = ui.ctx().content_rect();
+            app.list_overlay(ui.ctx(), screen, 0);
+        })
+        .textures_delta
+        .clear();
+    }
+
+    #[test]
+    fn list_scrolls_steadily_down_to_the_end() {
+        let mut text = String::from("#EXTM3U\n");
+        for i in 1..=60 {
+            text += &format!("#EXTINF:-1,Channel {i}\nhttp://example.com/{i}.ts\n");
+        }
+        let playlist = openzap::m3u::parse(&text).unwrap();
+        let mut app = App::new(playlist, openzap::epg::Epg::default(), vec![]);
+        app.list_overlay.pinned = true;
+        app.focus = Focus::List;
+        let ctx = egui::Context::default();
+        ctx.set_zoom_factor(0.75);
+        let mut time = 0.0;
+        let mut frame = |app: &mut App| {
+            time += 1.0 / 60.0;
+            overlay_frame(app, &ctx, time);
+        };
+        for _ in 0..5 {
+            frame(&mut app);
+        }
+        let mut last = 0.0;
+        for _ in 0..70 {
+            app.move_selection(1);
+            frame(&mut app);
+            let (wanted, _) = app.list_drawn.unwrap();
+            // The next frames keep the list where it was put: no bounce.
+            for _ in 0..5 {
+                frame(&mut app);
+                assert_eq!(app.list_drawn.unwrap().0, wanted);
+            }
+            assert!(wanted >= last, "scrolled back from {last} to {wanted}");
+            last = wanted;
+        }
+        assert_eq!(app.selected, Some(59));
+        assert!(last > 0.0);
     }
 }

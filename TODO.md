@@ -100,8 +100,11 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
 - [ ] List flicker on the Deck: 0.6.1 flickered only at the last
       channels; with the clamp in 0.6.2 the selected row always sits at the
       bottom and flickers on every move (Deck, 2026-11-27). Not reproduced
-      on WSL (docked and overlay, 100 % and 75 %). `--debug` now logs the
-      scroll values ("list scroll:") for a Deck log.
+      on WSL (docked and overlay, 100 % and 75 %) nor in a headless test
+      of the Deck setup (Game Mode, 75 %, list on the right opened with A,
+      D-pad down). The centring now uses the list height egui drew last
+      frame instead of an estimate; `--debug` logs the scroll values
+      ("list scroll:"). Needs a Deck check plus that log.
 - [x] Settings dialog with a gamepad (0.6.0, Deck): D-pad moves between
       fields, A toggles/opens, B cancels, the focus outline is visible.
 - [x] Interface scale (settings, `Ctrl` + `+`/`-`/`0`, 75–200 %) works on
