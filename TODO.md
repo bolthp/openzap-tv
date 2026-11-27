@@ -63,7 +63,10 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
 
 ## Logos
 
-- [ ] Limit the logo textures kept in memory (LRU) for very long lists.
+- [x] Logos in memory are limited for very long lists: at most 512
+      textures (least recently drawn go first), 64 loaded but not yet shown,
+      128 waiting downloads (those scrolled past are dropped). Dropped ones
+      come back from the disk cache.
 
 ## Testing
 

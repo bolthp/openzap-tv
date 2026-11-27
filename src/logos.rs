@@ -4,7 +4,7 @@
 //! Errors are never reported with the URL (it could carry a key); a logo
 //! that cannot be loaded is simply not shown.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
@@ -23,6 +23,12 @@ pub const CACHE_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
 const WORKERS: usize = 4;
 /// An idle worker thread exits after this long.
 const IDLE_EXIT: Duration = Duration::from_secs(30);
+/// Waiting downloads kept; older ones (scrolled past) are dropped and
+/// asked for again if they come back into view.
+const MAX_QUEUED: usize = 128;
+/// Loaded logos not yet taken (their row was scrolled away); older ones
+/// are dropped and loaded again (from the disk cache) when needed.
+const MAX_UNCLAIMED: usize = 64;
 
 /// Decoded RGBA pixels, row by row.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +60,8 @@ struct State {
     slots: HashMap<String, Slot>,
     /// Waiting URLs; the newest is served first (what is on screen now).
     queue: Vec<String>,
+    /// Loaded but not yet taken, oldest first.
+    unclaimed: VecDeque<String>,
     workers: usize,
     shutdown: bool,
 }
@@ -64,6 +72,38 @@ struct Shared {
     cache_dir: Option<PathBuf>,
     /// Called from a worker thread when a logo has finished loading.
     on_ready: Box<dyn Fn() + Send + Sync>,
+}
+
+impl State {
+    /// Queues `url`, dropping the oldest waiting one past [`MAX_QUEUED`].
+    fn enqueue(&mut self, url: &str) {
+        self.slots.insert(url.to_string(), Slot::Queued);
+        self.queue.push(url.to_string());
+        if self.queue.len() > MAX_QUEUED {
+            let oldest = self.queue.remove(0);
+            self.slots.remove(&oldest);
+        }
+    }
+
+    /// Stores a finished load; drops the oldest unclaimed logos past
+    /// [`MAX_UNCLAIMED`].
+    fn finish(&mut self, url: String, slot: Slot) {
+        let ready = matches!(slot, Slot::Ready(_));
+        self.slots.insert(url.clone(), slot);
+        if !ready {
+            return;
+        }
+        // Forget the ones taken meanwhile.
+        let slots = &self.slots;
+        self.unclaimed
+            .retain(|u| matches!(slots.get(u), Some(Slot::Ready(_))));
+        self.unclaimed.push_back(url);
+        while self.unclaimed.len() > MAX_UNCLAIMED {
+            if let Some(oldest) = self.unclaimed.pop_front() {
+                self.slots.remove(&oldest);
+            }
+        }
+    }
 }
 
 impl Shared {
@@ -104,8 +144,7 @@ impl LogoLoader {
             }
             None => {}
         }
-        state.slots.insert(url.to_string(), Slot::Queued);
-        state.queue.push(url.to_string());
+        state.enqueue(url);
         if state.workers < WORKERS {
             state.workers += 1;
             let shared = Arc::clone(&self.shared);
@@ -159,7 +198,7 @@ fn worker(shared: &Shared) {
             Some(rgba) => Slot::Ready(rgba),
             None => Slot::Failed,
         };
-        shared.lock().slots.insert(url, slot);
+        shared.lock().finish(url, slot);
         (shared.on_ready)();
     }
 }
@@ -337,6 +376,46 @@ mod tests {
         loader.take(path.to_str().unwrap());
         assert!(rx.recv_timeout(Duration::from_secs(5)).is_ok());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn tiny() -> Slot {
+        Slot::Ready(Rgba {
+            width: 1,
+            height: 1,
+            pixels: vec![0; 4],
+        })
+    }
+
+    #[test]
+    fn old_waiting_downloads_are_dropped() {
+        let mut state = State::default();
+        for i in 0..MAX_QUEUED + 5 {
+            state.enqueue(&format!("u{i}"));
+        }
+        assert_eq!(state.queue.len(), MAX_QUEUED);
+        assert_eq!(state.slots.len(), MAX_QUEUED);
+        // The first ones go; asked again, they are queued anew.
+        assert!(!state.slots.contains_key("u0"));
+        assert!(state.slots.contains_key(&format!("u{}", MAX_QUEUED + 4)));
+        assert_eq!(state.queue.last().unwrap(), &format!("u{}", MAX_QUEUED + 4));
+    }
+
+    #[test]
+    fn unclaimed_logos_are_limited() {
+        let mut state = State::default();
+        for i in 0..MAX_UNCLAIMED + 10 {
+            state.finish(format!("u{i}"), tiny());
+        }
+        assert_eq!(state.slots.len(), MAX_UNCLAIMED);
+        assert!(!state.slots.contains_key("u0"));
+        assert!(state.slots.contains_key("u10"));
+        // Taken ones no longer count; failures never do.
+        state.slots.remove("u10");
+        state.finish("bad".into(), Slot::Failed);
+        state.finish("new".into(), tiny());
+        assert!(state.slots.contains_key("u11"), "{:?}", state.unclaimed);
+        assert!(state.slots.contains_key("bad"));
+        assert_eq!(state.unclaimed.len(), MAX_UNCLAIMED);
     }
 
     #[test]
