@@ -114,6 +114,14 @@ impl LogoLoader {
         self.shared.wake.notify_one();
         Logo::Loading
     }
+
+    /// Lets logos that failed be tried again (e.g. after a proxy change).
+    pub fn forget_failed(&self) {
+        self.shared
+            .lock()
+            .slots
+            .retain(|_, slot| !matches!(slot, Slot::Failed));
+    }
 }
 
 impl Drop for LogoLoader {
@@ -280,7 +288,13 @@ mod tests {
         assert_eq!(loader.take(path), Logo::Loading);
 
         let missing = dir.join("missing.png");
-        assert_eq!(wait_for(&loader, missing.to_str().unwrap()), Logo::Failed);
+        let missing = missing.to_str().unwrap();
+        assert_eq!(wait_for(&loader, missing), Logo::Failed);
+        assert_eq!(loader.take(missing), Logo::Failed, "not tried again");
+        // Once it exists, a retry finds it.
+        std::fs::write(missing, png(10, 10)).unwrap();
+        loader.forget_failed();
+        assert!(matches!(wait_for(&loader, missing), Logo::Ready(_)));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

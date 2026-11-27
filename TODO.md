@@ -57,7 +57,9 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
       playlist, guide, logos and an HTTPS HLS channel; traffic left from the
       server's address. HTTP streams start slowly there (~15 s: 105 ms RTT,
       and FFmpeg sends the login only after a 407 on every connection).
-- [ ] Proxy: changing it in the settings while running; Windows.
+- [ ] Proxy: changing it in the settings while running (the playlist,
+      guide and channel are loaded again, logos that failed are retried)
+      is covered by unit tests only; not tried by hand yet, nor on Windows.
 
 ## Logos
 

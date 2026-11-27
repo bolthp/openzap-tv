@@ -48,6 +48,12 @@ impl Logos {
             .insert(url.to_string(), texture.clone());
         texture
     }
+
+    /// Tries the logos that failed again (e.g. after a proxy change).
+    pub(super) fn retry_failed(&self) {
+        self.textures.borrow_mut().retain(|_, t| t.is_some());
+        self.loader.forget_failed();
+    }
 }
 
 /// Draws `texture` fitted into `area` (aspect kept, centred), or the first

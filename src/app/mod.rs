@@ -884,8 +884,12 @@ impl App {
         if proxy_changed {
             self.config.proxy = proxy;
             self.apply_proxy();
-            // The channel playing goes through the new route too.
+            // The channel playing goes through the new route too, and logos
+            // that failed on the old one get another try.
             self.restart();
+            if let Some(logos) = &self.logos {
+                logos.retry_failed();
+            }
         }
         if draft.playback != self.config.playback {
             self.config.playback = draft.playback;
