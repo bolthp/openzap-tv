@@ -270,6 +270,9 @@ impl Config {
                         );
                     }
                 }
+                // Kept as typed; an invalid list is ignored when applied.
+                "audio_lang" => cfg.playback.audio_lang = value.to_string(),
+                "sub_lang" => cfg.playback.sub_lang = value.to_string(),
                 "list_side" => match value {
                     "left" => cfg.view.list_side = Side::Left,
                     "right" => cfg.view.list_side = Side::Right,
@@ -364,6 +367,14 @@ impl Config {
         };
         out.push_str(&format!("hwdec={hwdec}\n"));
         out.push_str(&format!("buffer_secs={}\n", self.playback.buffer_secs));
+        if !self.playback.audio_lang.is_empty() {
+            let lang = one_line(&self.playback.audio_lang);
+            out.push_str(&format!("audio_lang={lang}\n"));
+        }
+        if !self.playback.sub_lang.is_empty() {
+            let lang = one_line(&self.playback.sub_lang);
+            out.push_str(&format!("sub_lang={lang}\n"));
+        }
         let side = match self.view.list_side {
             Side::Left => "left",
             Side::Right => "right",
@@ -514,6 +525,8 @@ mod tests {
             playback: PlaybackSettings {
                 hwdec: HardwareDecoding::Auto,
                 buffer_secs: 25,
+                audio_lang: "ru, en".into(),
+                sub_lang: "uk".into(),
             },
             view: ViewSettings {
                 list_side: Side::Right,

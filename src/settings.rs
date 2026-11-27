@@ -3,6 +3,7 @@
 use eframe::egui;
 use openzap::cache;
 use openzap::config::{Config, SCALES, Theme, UpdatePolicy};
+use openzap::lang;
 use openzap::player::{HardwareDecoding, PlaybackSettings};
 use openzap::proxy::{Protocol, ProxyUrl};
 
@@ -42,7 +43,7 @@ impl SettingsDraft {
             epg: epg.to_string(),
             resume_last: config.resume_last,
             archive: config.archive,
-            playback: config.playback,
+            playback: config.playback.clone(),
             theme: config.view.theme,
             scale_percent: config.view.scale_percent,
             playlist_update: config.playlist_update,
@@ -60,6 +61,19 @@ impl SettingsDraft {
     /// Why the proxy address cannot be used, if it cannot.
     pub fn proxy_error(&self) -> Option<String> {
         ProxyUrl::parse(&self.proxy).err().map(|e| e.to_string())
+    }
+
+    /// Why a language list cannot be used, if one cannot.
+    pub fn lang_error(&self) -> Option<String> {
+        [&self.playback.audio_lang, &self.playback.sub_lang]
+            .into_iter()
+            .find_map(|text| lang::parse(text).err())
+            .map(|e| e.to_string())
+    }
+
+    /// Everything can be saved.
+    pub fn is_valid(&self) -> bool {
+        self.proxy_error().is_none() && self.lang_error().is_none()
     }
 }
 
@@ -120,7 +134,7 @@ fn show_modal(
             ui.weak(version_label());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // Nothing invalid can be saved; the field says why.
-                let valid = draft.proxy_error().is_none();
+                let valid = draft.is_valid();
                 if ui.add_enabled(valid, egui::Button::new("Save")).clicked() {
                     outcome = Some(Outcome::Save);
                 }
@@ -235,9 +249,28 @@ fn body(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
                 .suffix(" s"),
             );
             ui.end_row();
+            ui.label("Audio language");
+            ui.add(
+                egui::TextEdit::singleline(&mut draft.playback.audio_lang)
+                    .hint_text("optional: e.g. ru, en")
+                    .desired_width(f32::INFINITY),
+            );
+            ui.end_row();
+            ui.label("Subtitle language");
+            ui.add(
+                egui::TextEdit::singleline(&mut draft.playback.sub_lang)
+                    .hint_text("optional: e.g. en")
+                    .desired_width(f32::INFINITY),
+            );
+            ui.end_row();
         });
+    if let Some(error) = draft.lang_error() {
+        ui.colored_label(ui.visuals().error_fg_color, error);
+    }
     ui.small(
-        "A larger buffer helps with unstable connections; switching channels may take longer.",
+        "A larger buffer helps with unstable connections; switching channels may take longer. \
+         Languages: the first one a channel has is chosen when it starts (ru also finds rus); \
+         subtitles in those languages are shown. A and S still switch.",
     );
 
     section(ui, "Archive");
@@ -428,6 +461,18 @@ mod tests {
         // The contents do not fit the smallest window: there they scroll.
         let low = dialog_rect(egui::vec2(720.0, 480.0));
         assert!(low.height() < tall.height());
+    }
+
+    #[test]
+    fn language_lists_are_checked() {
+        let mut draft = SettingsDraft::new("", "", &Config::default());
+        assert!(draft.is_valid());
+        draft.playback.audio_lang = "ru, en".into();
+        draft.playback.sub_lang = "uk".into();
+        assert!(draft.is_valid());
+        draft.playback.sub_lang = "ukrainian!".into();
+        assert!(draft.lang_error().unwrap().contains("ukrainian!"));
+        assert!(!draft.is_valid());
     }
 
     #[test]

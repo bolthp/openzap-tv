@@ -19,7 +19,8 @@ Desktop IPTV player for Windows, Linux and macOS: HLS/HTTP streams, M3U playlist
 - Video plays inside the main window (libmpv, OpenGL)
 - Channel list on the left or right (or hidden); the programme guide and the
   controls slide up over the video
-- Audio track and subtitle switching, picture size (aspect ratio, crop, stretch), always on top
+- Audio track and subtitle switching (with preferred languages), picture size (aspect
+  ratio, crop, stretch), always on top
 - Dark, light or system theme
 - Interface scale from 75 to 200 % for small screens or watching from the couch
 - Channel logos (`tvg-logo` from the playlist, otherwise the guide's channel
@@ -93,8 +94,8 @@ Delete those two files to remove it.
 
 On first start the **Settings** dialog opens: enter the playlist (a URL, or
 a file chosen with **Browse…**) and, optionally, the programme guide. Settings also hold
-how often to update them, hardware decoding, the network buffer and whether to resume
-the last channel on start.
+how often to update them, hardware decoding, the network buffer, preferred audio and
+subtitle languages (e.g. `ru, en`) and whether to resume the last channel on start.
 
 The channel list appears as soon as the playlist is read; a big guide keeps
 loading in the background. By default the playlist is downloaded on every

@@ -181,11 +181,17 @@ fn parse_flag(value: &str) -> Option<bool> {
 }
 
 /// Playback options the user can change; applied at creation and live.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaybackSettings {
     pub hwdec: HardwareDecoding,
     /// How many seconds of a stream to read ahead (network buffer).
     pub buffer_secs: u32,
+    /// Preferred audio languages as typed (see `lang`); empty: the
+    /// stream's default track.
+    pub audio_lang: String,
+    /// Preferred subtitle languages as typed; empty: subtitles only when
+    /// the stream marks them as default.
+    pub sub_lang: String,
 }
 
 impl PlaybackSettings {
@@ -202,6 +208,9 @@ impl PlaybackSettings {
             ("hwdec", self.hwdec.mpv_value().to_string()),
             ("cache-secs", secs.clone()),
             ("demuxer-readahead-secs", secs),
+            // Used when the next channel opens (tracks are chosen then).
+            ("alang", crate::lang::mpv_value(&self.audio_lang)),
+            ("slang", crate::lang::mpv_value(&self.sub_lang)),
         ]
     }
 }
@@ -211,6 +220,8 @@ impl Default for PlaybackSettings {
         PlaybackSettings {
             hwdec: HardwareDecoding::default(),
             buffer_secs: 10,
+            audio_lang: String::new(),
+            sub_lang: String::new(),
         }
     }
 }
@@ -945,6 +956,8 @@ mod tests {
         let s = PlaybackSettings {
             hwdec: HardwareDecoding::Auto,
             buffer_secs: 30,
+            audio_lang: "ru, en".into(),
+            sub_lang: String::new(),
         };
         assert_eq!(
             s.mpv_options(),
@@ -952,11 +965,14 @@ mod tests {
                 ("hwdec", "auto-safe".to_string()),
                 ("cache-secs", "30".to_string()),
                 ("demuxer-readahead-secs", "30".to_string()),
+                ("alang", "ru,rus,en,eng".to_string()),
+                ("slang", String::new()),
             ]
         );
         let extreme = PlaybackSettings {
             hwdec: HardwareDecoding::Off,
             buffer_secs: 100_000,
+            ..PlaybackSettings::default()
         };
         assert_eq!(extreme.mpv_options()[0].1, "no");
         assert_eq!(extreme.mpv_options()[1].1, "120");
@@ -969,8 +985,12 @@ mod tests {
         let auto = PlaybackSettings {
             hwdec: HardwareDecoding::Auto,
             buffer_secs: 5,
+            audio_lang: "deu".into(),
+            sub_lang: "ru, en".into(),
         };
         assert_eq!(p.apply(&auto), Ok(()));
+        assert_eq!(p.get_property("alang").as_deref(), Some("deu,de,ger"));
+        assert_eq!(p.get_property("slang").as_deref(), Some("ru,rus,en,eng"));
         assert_eq!(p.apply(&PlaybackSettings::default()), Ok(()));
 
         let options: Vec<(String, String)> = auto

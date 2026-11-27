@@ -41,7 +41,11 @@ Feature set to aim for (see the OTT-Play player for TVs); roughly by value.
 
 ## Settings
 
-- [ ] Possibly: audio/subtitle language preference, deinterlacing.
+- [x] Preferred audio and subtitle languages (settings → Playback, e.g.
+      `ru, en`; `ru` also finds `rus`, `de` finds `ger`/`deu`). Checked with
+      libmpv on a synthetic TS with `eng` + `deu` audio; not yet tried with a
+      real provider or on the Deck.
+- [ ] Possibly: deinterlacing.
 
 ## Network
 

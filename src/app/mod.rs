@@ -892,8 +892,8 @@ impl App {
             }
         }
         if draft.playback != self.config.playback {
-            self.config.playback = draft.playback;
             let applied = self.player.as_ref().map(|p| p.apply(&draft.playback));
+            self.config.playback = draft.playback;
             if let Some(Err(e)) = applied {
                 self.status = format!("Cannot apply playback settings: {e}");
             }

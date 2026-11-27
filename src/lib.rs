@@ -11,6 +11,7 @@ pub mod diagnose;
 pub mod epg;
 pub mod files;
 pub mod guide;
+pub mod lang;
 pub mod loader;
 pub mod logos;
 pub mod m3u;
