@@ -40,6 +40,11 @@
     <control>pointing</control>
   </supports>
   <releases>
+    <release version="0.6.3" date="2026-11-27">
+      <description>
+        <p>Preferred audio and subtitle languages (Settings → Playback, e.g. "ru, en"). The channel list keeps the selected channel steady while moving through it. Fewer channel logos are kept in memory with very long playlists, and logos that failed to load are tried again after the proxy is changed.</p>
+      </description>
+    </release>
     <release version="0.6.2" date="2026-11-26">
       <description>
         <p>Moving through the channel list to its last channels no longer makes the list flicker and jump. A proxy that cannot be reached or rejects the login is now named in the error instead of a general network error. New command-line options --position and --size open the window at a given place and size.</p>
