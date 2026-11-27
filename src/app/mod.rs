@@ -421,6 +421,8 @@ pub struct App {
     tracks_refreshed_at: Option<f64>,
     /// Scroll the list to this channel on the next frame.
     scroll_to: Option<usize>,
+    /// `--debug`: list frames still to log after a scroll.
+    scroll_trace: u8,
     /// The channel list was on screen last frame.
     list_was_shown: bool,
     /// The theme and interface scale still need to be sent to egui.
@@ -569,6 +571,7 @@ impl App {
             sub_pos_applied: None,
             tracks_refreshed_at: None,
             scroll_to: None,
+            scroll_trace: 0,
             list_was_shown: false,
             view_pending: true,
             on_top_applied: None,

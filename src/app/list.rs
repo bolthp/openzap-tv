@@ -58,6 +58,9 @@ impl ListOverlay {
 /// Width : height of the logo box (logos are mostly landscape).
 const LOGO_ASPECT: f32 = 1.5;
 
+/// `--debug`: frames logged after a scroll to the selection.
+const SCROLL_TRACE_FRAMES: u8 = 4;
+
 /// Colour of the favorite star.
 const STAR: egui::Color32 = egui::Color32::from_rgb(240, 190, 40);
 
@@ -227,13 +230,19 @@ impl App {
                 step,
                 ui.available_height(),
             );
+            self.dlog(&format!(
+                "list scroll: row {pos} of {}, viewport {:.1}, step {step:.2}, offset {offset:.1}",
+                self.visible.len(),
+                ui.available_height(),
+            ));
+            self.scroll_trace = SCROLL_TRACE_FRAMES;
             scroll = scroll.vertical_scroll_offset(offset);
         }
 
         let mut clicked = None;
         let mut play = None;
         let mut favorite = None;
-        scroll.show_rows(ui, row_height, self.visible.len(), |ui, range| {
+        let out = scroll.show_rows(ui, row_height, self.visible.len(), |ui, range| {
             for &idx in &self.visible[range] {
                 let response = self.channel_row(ui, idx, row_height, now);
                 if response.clicked() {
@@ -256,6 +265,15 @@ impl App {
                 });
             }
         });
+        if self.scroll_trace > 0 {
+            self.scroll_trace -= 1;
+            self.dlog(&format!(
+                "list scroll: drawn at {:.1}, viewport {:.1}, content {:.1}",
+                out.state.clamped_offset().y,
+                out.inner_rect.height(),
+                out.content_size.y,
+            ));
+        }
         if let Some(idx) = clicked {
             self.select(idx);
             self.focus = Focus::List;
